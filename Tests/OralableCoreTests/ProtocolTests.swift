@@ -91,14 +91,15 @@ final class ProtocolTests: XCTestCase {
     }
 
     func testSensorReadingArrayExtensions() {
+        let baseDate = Date()
         let readings = [
-            SensorReading(sensorType: .heartRate, value: 70),
-            SensorReading(sensorType: .heartRate, value: 72),
-            SensorReading(sensorType: .heartRate, value: 74),
-            SensorReading(sensorType: .spo2, value: 98)
+            SensorReading(sensorType: .heartRate, value: 70, timestamp: baseDate),
+            SensorReading(sensorType: .heartRate, value: 72, timestamp: baseDate.addingTimeInterval(1)),
+            SensorReading(sensorType: .heartRate, value: 74, timestamp: baseDate.addingTimeInterval(2)),
+            SensorReading(sensorType: .spo2, value: 98, timestamp: baseDate.addingTimeInterval(3))
         ]
 
-        // Test latest
+        // Test latest (by timestamp)
         let latestHR = readings.latest(for: .heartRate)
         XCTAssertNotNil(latestHR)
         XCTAssertEqual(latestHR?.value, 74)
