@@ -1,0 +1,19 @@
+# Xcode
+.DS_Store
+*.xcodeproj
+xcuserdata/
+*.xcworkspace
+!*.xcworkspace/contents.xcworkspacedata
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Derived Data
+DerivedData/
+
+# Build artifacts
+*.o
+*.a
+*.dylib
