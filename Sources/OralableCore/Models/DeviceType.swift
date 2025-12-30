@@ -95,6 +95,38 @@ public enum DeviceType: String, CaseIterable, Codable, Sendable {
         }
     }
 
+    // MARK: - Default Sensors
+
+    /// Default sensors supported by this device type
+    public var defaultSensors: [SensorType] {
+        switch self {
+        case .oralable:
+            return [
+                .ppgRed,
+                .ppgInfrared,
+                .ppgGreen,
+                .accelerometerX,
+                .accelerometerY,
+                .accelerometerZ,
+                .temperature,
+                .battery,
+                .heartRate,
+                .spo2
+            ]
+        case .anr:
+            return [
+                .emg,
+                .accelerometerX,
+                .accelerometerY,
+                .accelerometerZ,
+                .battery,
+                .muscleActivity
+            ]
+        case .demo:
+            return SensorType.allCases
+        }
+    }
+
     // MARK: - Helper Methods
 
     /// Determine device type from a device name string
@@ -112,26 +144,5 @@ public enum DeviceType: String, CaseIterable, Codable, Sendable {
         }
 
         return .oralable
-    }
-}
-
-// MARK: - Device Connection State
-
-/// Represents the connection state of a BLE device
-public enum DeviceConnectionState: String, Codable, Sendable {
-    case disconnected = "Disconnected"
-    case connecting = "Connecting"
-    case connected = "Connected"
-    case disconnecting = "Disconnecting"
-    case error = "Error"
-
-    /// Human-readable description
-    public var description: String {
-        return rawValue
-    }
-
-    /// Whether the device is in an active state (connected or connecting)
-    public var isActive: Bool {
-        return self == .connected || self == .connecting
     }
 }
