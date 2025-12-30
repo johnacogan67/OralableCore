@@ -204,4 +204,21 @@ public enum SignalQuality: String, Codable, Sendable {
             return false
         }
     }
+
+    /// Create SignalQuality from RSSI value
+    /// - Parameter rssi: RSSI value in dBm (typically -30 to -100)
+    /// - Returns: SignalQuality classification
+    public static func from(rssi: Int) -> SignalQuality {
+        if rssi >= -50 {
+            return .excellent
+        } else if rssi >= -60 {
+            return .good
+        } else if rssi >= -70 {
+            return .fair
+        } else if rssi >= -80 {
+            return .weak
+        } else {
+            return .poor
+        }
+    }
 }
