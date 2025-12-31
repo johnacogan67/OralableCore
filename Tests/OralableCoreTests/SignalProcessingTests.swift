@@ -588,4 +588,260 @@ final class SignalProcessingTests: XCTestCase {
         let demo = ProcessingConfiguration.demo
         XCTAssertEqual(demo.ppgBufferSize, 20)
     }
+
+    // MARK: - ExtendedProcessingResult Tests
+
+    func testExtendedProcessingResultCreation() {
+        let baseResult = ProcessingResult(
+            heartRate: 72,
+            spo2: 98,
+            activity: .relaxed,
+            signalQuality: 0.85
+        )
+
+        let extended = ExtendedProcessingResult(
+            result: baseResult,
+            heartRateConfidence: 0.9,
+            spo2Confidence: 0.85,
+            motionMagnitude: 1.1,
+            sampleCount: 250,
+            processingTimeMs: 15.5
+        )
+
+        XCTAssertEqual(extended.heartRate, 72)
+        XCTAssertEqual(extended.spo2, 98)
+        XCTAssertEqual(extended.activity, .relaxed)
+        XCTAssertEqual(extended.heartRateConfidence, 0.9)
+        XCTAssertEqual(extended.spo2Confidence, 0.85)
+        XCTAssertEqual(extended.motionMagnitude, 1.1)
+        XCTAssertEqual(extended.sampleCount, 250)
+        XCTAssertEqual(extended.processingTimeMs, 15.5)
+    }
+
+    func testExtendedProcessingResultOverallConfidence() {
+        let baseResult = ProcessingResult(heartRate: 72, spo2: 98, activity: .relaxed)
+
+        let extended = ExtendedProcessingResult(
+            result: baseResult,
+            heartRateConfidence: 0.8,
+            spo2Confidence: 0.6,
+            motionMagnitude: 1.0,
+            sampleCount: 100,
+            processingTimeMs: 10.0
+        )
+
+        XCTAssertEqual(extended.overallConfidence, 0.7, accuracy: 0.01)
+    }
+
+    func testExtendedProcessingResultIsStable() {
+        let baseResult = ProcessingResult(heartRate: 72, spo2: 98, activity: .relaxed)
+
+        let stable = ExtendedProcessingResult(
+            result: baseResult,
+            heartRateConfidence: 0.9,
+            spo2Confidence: 0.9,
+            motionMagnitude: 1.2,  // Below 1.5g threshold
+            sampleCount: 100,
+            processingTimeMs: 10.0
+        )
+        XCTAssertTrue(stable.isStable)
+
+        let unstable = ExtendedProcessingResult(
+            result: baseResult,
+            heartRateConfidence: 0.9,
+            spo2Confidence: 0.9,
+            motionMagnitude: 2.0,  // Above 1.5g threshold
+            sampleCount: 100,
+            processingTimeMs: 10.0
+        )
+        XCTAssertFalse(unstable.isStable)
+    }
+
+    func testExtendedProcessingResultConfidenceClamping() {
+        let baseResult = ProcessingResult(heartRate: 72, spo2: 98, activity: .relaxed)
+
+        let extended = ExtendedProcessingResult(
+            result: baseResult,
+            heartRateConfidence: 1.5,  // Should clamp to 1.0
+            spo2Confidence: -0.5,      // Should clamp to 0.0
+            motionMagnitude: 1.0,
+            sampleCount: 100,
+            processingTimeMs: 10.0
+        )
+
+        XCTAssertEqual(extended.heartRateConfidence, 1.0)
+        XCTAssertEqual(extended.spo2Confidence, 0.0)
+    }
+
+    // MARK: - ProcessingQualityMetrics Extended Tests
+
+    func testProcessingQualityMetricsQualityLevels() {
+        // Excellent
+        let excellent = ProcessingQualityMetrics(
+            overallQuality: 0.85,
+            ppgQuality: 0.9,
+            motionArtifactLevel: 0.1,
+            estimatedSNR: 25.0,
+            peakCount: 5
+        )
+        XCTAssertEqual(excellent.qualityLevel, .excellent)
+
+        // Good
+        let good = ProcessingQualityMetrics(
+            overallQuality: 0.65,
+            ppgQuality: 0.7,
+            motionArtifactLevel: 0.2,
+            estimatedSNR: 18.0,
+            peakCount: 4
+        )
+        XCTAssertEqual(good.qualityLevel, .good)
+
+        // Fair
+        let fair = ProcessingQualityMetrics(
+            overallQuality: 0.45,
+            ppgQuality: 0.5,
+            motionArtifactLevel: 0.4,
+            estimatedSNR: 12.0,
+            peakCount: 3
+        )
+        XCTAssertEqual(fair.qualityLevel, .fair)
+
+        // Acceptable
+        let acceptable = ProcessingQualityMetrics(
+            overallQuality: 0.25,
+            ppgQuality: 0.3,
+            motionArtifactLevel: 0.6,
+            estimatedSNR: 8.0,
+            peakCount: 2
+        )
+        XCTAssertEqual(acceptable.qualityLevel, .acceptable)
+
+        // Poor
+        let poor = ProcessingQualityMetrics(
+            overallQuality: 0.1,
+            ppgQuality: 0.1,
+            motionArtifactLevel: 0.9,
+            estimatedSNR: 3.0,
+            peakCount: 1
+        )
+        XCTAssertEqual(poor.qualityLevel, .poor)
+    }
+
+    func testProcessingQualityMetricsClinicalQuality() {
+        // Clinical quality requires overallQuality >= 0.7 AND motionArtifactLevel < 0.3
+        let clinical = ProcessingQualityMetrics(
+            overallQuality: 0.75,
+            ppgQuality: 0.8,
+            motionArtifactLevel: 0.2,
+            estimatedSNR: 20.0,
+            peakCount: 5
+        )
+        XCTAssertTrue(clinical.isClinicalQuality)
+
+        // High quality but too much motion
+        let tooMuchMotion = ProcessingQualityMetrics(
+            overallQuality: 0.8,
+            ppgQuality: 0.85,
+            motionArtifactLevel: 0.4,  // Too high
+            estimatedSNR: 22.0,
+            peakCount: 5
+        )
+        XCTAssertFalse(tooMuchMotion.isClinicalQuality)
+
+        // Low motion but low quality
+        let lowQuality = ProcessingQualityMetrics(
+            overallQuality: 0.5,  // Too low
+            ppgQuality: 0.6,
+            motionArtifactLevel: 0.1,
+            estimatedSNR: 15.0,
+            peakCount: 3
+        )
+        XCTAssertFalse(lowQuality.isClinicalQuality)
+    }
+
+    func testProcessingQualityMetricsValueClamping() {
+        let metrics = ProcessingQualityMetrics(
+            overallQuality: 1.5,       // Should clamp to 1.0
+            ppgQuality: -0.5,          // Should clamp to 0.0
+            motionArtifactLevel: 2.0,  // Should clamp to 1.0
+            estimatedSNR: 25.0,
+            peakCount: 5
+        )
+
+        XCTAssertEqual(metrics.overallQuality, 1.0)
+        XCTAssertEqual(metrics.ppgQuality, 0.0)
+        XCTAssertEqual(metrics.motionArtifactLevel, 1.0)
+    }
+
+    func testProcessingQualityMetricsWithHRV() {
+        let withHRV = ProcessingQualityMetrics(
+            overallQuality: 0.85,
+            ppgQuality: 0.9,
+            motionArtifactLevel: 0.1,
+            estimatedSNR: 25.0,
+            peakCount: 8,
+            hrvMs: 45.0
+        )
+        XCTAssertEqual(withHRV.hrvMs, 45.0)
+
+        let withoutHRV = ProcessingQualityMetrics.empty
+        XCTAssertNil(withoutHRV.hrvMs)
+    }
+
+    // MARK: - ProcessingState Extended Tests
+
+    func testProcessingStateAllCases() {
+        for state in ProcessingState.allCases {
+            XCTAssertFalse(state.rawValue.isEmpty)
+        }
+    }
+
+    func testProcessingStateRawValues() {
+        XCTAssertEqual(ProcessingState.idle.rawValue, "Idle")
+        XCTAssertEqual(ProcessingState.warmingUp.rawValue, "Warming Up")
+        XCTAssertEqual(ProcessingState.processing.rawValue, "Processing")
+        XCTAssertEqual(ProcessingState.pausedForMotion.rawValue, "Paused - Motion")
+        XCTAssertEqual(ProcessingState.pausedForSignal.rawValue, "Paused - Poor Signal")
+        XCTAssertEqual(ProcessingState.ready.rawValue, "Ready")
+        XCTAssertEqual(ProcessingState.error.rawValue, "Error")
+    }
+
+    // MARK: - ProcessingConfiguration Extended Tests
+
+    func testProcessingConfigurationCustom() {
+        let custom = ProcessingConfiguration(
+            ppgBufferSize: 150,
+            accelerometerBufferSize: 75,
+            minimumSamples: 75,
+            motionThreshold: 1.8,
+            qualityThreshold: 0.6,
+            updateInterval: 1.5
+        )
+
+        XCTAssertEqual(custom.ppgBufferSize, 150)
+        XCTAssertEqual(custom.accelerometerBufferSize, 75)
+        XCTAssertEqual(custom.minimumSamples, 75)
+        XCTAssertEqual(custom.motionThreshold, 1.8)
+        XCTAssertEqual(custom.qualityThreshold, 0.6)
+        XCTAssertEqual(custom.updateInterval, 1.5)
+    }
+
+    func testProcessingConfigurationPresetDifferences() {
+        let consumer = ProcessingConfiguration.consumer
+        let clinical = ProcessingConfiguration.clinical
+        let responsive = ProcessingConfiguration.responsive
+        let demo = ProcessingConfiguration.demo
+
+        // Clinical should have stricter thresholds
+        XCTAssertGreaterThan(clinical.qualityThreshold, consumer.qualityThreshold)
+        XCTAssertLessThan(clinical.motionThreshold, consumer.motionThreshold)
+
+        // Responsive should be faster
+        XCTAssertLessThan(responsive.updateInterval, consumer.updateInterval)
+        XCTAssertLessThan(responsive.minimumSamples, consumer.minimumSamples)
+
+        // Demo should be fastest with lowest thresholds
+        XCTAssertLessThan(demo.qualityThreshold, responsive.qualityThreshold)
+        XCTAssertGreaterThan(demo.motionThreshold, responsive.motionThreshold)
+    }
 }
