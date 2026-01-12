@@ -3,13 +3,19 @@
 //  OralableCore
 //
 //  Created: January 8, 2026
+//  Updated: January 12, 2026 - Streaming mode with running sum instead of array storage
+//
 //  Detects muscle activity events when PPG IR crosses threshold
 //  Events alternate between Activity (above threshold) and Rest (below threshold)
+//
+//  Designed for real-time streaming - does not store raw samples
+//  Uses running sum for average calculation instead of accumulating values
 //
 
 import Foundation
 
 /// Detects muscle activity events when PPG IR crosses threshold
+/// Designed for real-time streaming - does not store raw samples
 public class EventDetector {
 
     // MARK: - Configuration
@@ -24,16 +30,23 @@ public class EventDetector {
 
     // MARK: - State
 
+    private var isInEvent: Bool = false
     private var currentEventType: EventType?
     private var eventStartTimestamp: Date?
     private var eventStartIR: Int?
-    private var eventIRValues: [Int] = []
+    private var eventIRSum: Int64 = 0        // Running sum for average (not storing all values)
+    private var eventIRCount: Int = 0        // Count for average
     private var eventStartAccel: (x: Int, y: Int, z: Int)?
     private var eventStartTemperature: Double?
     private var eventCounter: Int = 0
     private var discardedEventCounter: Int = 0
 
-    // MARK: - Metric History (for validation)
+    // MARK: - Streaming Statistics
+
+    private(set) public var totalSamplesProcessed: Int = 0
+    private(set) public var samplesDiscarded: Int = 0
+
+    // MARK: - Metric History (for validation - limited size)
 
     private var hrHistory: [(timestamp: Date, value: Double)] = []
     private var spO2History: [(timestamp: Date, value: Double)] = []
@@ -44,6 +57,7 @@ public class EventDetector {
 
     public var onEventDetected: ((MuscleActivityEvent) -> Void)?
     public var onEventDiscarded: ((MuscleActivityEvent) -> Void)?
+    public var onSampleDiscarded: (() -> Void)?  // Called when sample doesn't contribute to event boundary
 
     // MARK: - Init
 
@@ -106,9 +120,10 @@ public class EventDetector {
         temperatureHistory.removeAll { $0.timestamp < cutoff }
     }
 
-    // MARK: - Sample Processing
+    // MARK: - Sample Processing (Streaming)
 
-    /// Process a new PPG IR sample
+    /// Process a new PPG IR sample in real-time
+    /// Non-event samples are discarded immediately - only events are cached
     /// - Parameters:
     ///   - irValue: PPG IR value
     ///   - timestamp: Sample timestamp
@@ -124,14 +139,15 @@ public class EventDetector {
         accelZ: Int,
         temperature: Double
     ) {
+        totalSamplesProcessed += 1
+
         let aboveThreshold = irValue > threshold
-        let newEventType: EventType = aboveThreshold ? .activity : .rest
 
         // First sample - initialize state
         if currentEventType == nil {
-            currentEventType = newEventType
+            currentEventType = aboveThreshold ? .activity : .rest
             startEvent(
-                eventType: newEventType,
+                eventType: currentEventType!,
                 irValue: irValue,
                 timestamp: timestamp,
                 accelX: accelX,
@@ -143,6 +159,8 @@ public class EventDetector {
         }
 
         // Check for threshold crossing (event type change)
+        let newEventType: EventType = aboveThreshold ? .activity : .rest
+
         if newEventType != currentEventType {
             // End current event
             endEvent(irValue: irValue, timestamp: timestamp)
@@ -159,8 +177,13 @@ public class EventDetector {
                 temperature: temperature
             )
         } else {
-            // Same event type - accumulate IR values
-            eventIRValues.append(irValue)
+            // Same event type - update running average (don't store sample)
+            eventIRSum += Int64(irValue)
+            eventIRCount += 1
+
+            // Sample contributes to event but is not stored
+            samplesDiscarded += 1
+            onSampleDiscarded?()
         }
     }
 
@@ -173,9 +196,11 @@ public class EventDetector {
         accelZ: Int,
         temperature: Double
     ) {
+        isInEvent = true
         eventStartTimestamp = timestamp
         eventStartIR = irValue
-        eventIRValues = [irValue]
+        eventIRSum = Int64(irValue)
+        eventIRCount = 1
         eventStartAccel = (accelX, accelY, accelZ)
         eventStartTemperature = temperature
     }
@@ -192,9 +217,8 @@ public class EventDetector {
 
         eventCounter += 1
 
-        // Calculate average IR
-        let avgIR = eventIRValues.isEmpty ? Double(startIR) :
-            Double(eventIRValues.reduce(0, +)) / Double(eventIRValues.count)
+        // Calculate average IR from running sum (no array storage needed)
+        let avgIR = eventIRCount > 0 ? Double(eventIRSum) / Double(eventIRCount) : Double(startIR)
 
         // Check validation
         let isValid = hasValidMetricInWindow(before: startTimestamp)
@@ -222,7 +246,7 @@ public class EventDetector {
             isValid: isValid
         )
 
-        // Only emit valid events
+        // Emit event immediately
         if isValid {
             onEventDetected?(event)
         } else {
@@ -233,13 +257,22 @@ public class EventDetector {
         resetEventState()
     }
 
+    /// Finalize any in-progress event (call when recording stops)
+    public func finalizeCurrentEvent(endIR: Int, timestamp: Date) {
+        if isInEvent {
+            endEvent(irValue: endIR, timestamp: timestamp)
+        }
+    }
+
     private func resetEventState() {
+        isInEvent = false
         eventStartTimestamp = nil
         eventStartIR = nil
-        eventIRValues = []
+        eventIRSum = 0
+        eventIRCount = 0
         eventStartAccel = nil
         eventStartTemperature = nil
-        // Note: currentEventType is NOT reset - it tracks the current state
+        // Note: currentEventType is NOT reset - tracks current state
     }
 
     // MARK: - Validation
@@ -300,6 +333,11 @@ public class EventDetector {
         eventCounter - discardedEventCounter
     }
 
+    /// Streaming statistics tuple (processed, discarded, events)
+    public var statistics: (processed: Int, discarded: Int, eventsDetected: Int) {
+        (totalSamplesProcessed, samplesDiscarded, eventCounter)
+    }
+
     // MARK: - Reset
 
     /// Reset all state and counters
@@ -308,6 +346,8 @@ public class EventDetector {
         currentEventType = nil
         eventCounter = 0
         discardedEventCounter = 0
+        totalSamplesProcessed = 0
+        samplesDiscarded = 0
         hrHistory.removeAll()
         spO2History.removeAll()
         sleepHistory.removeAll()
