@@ -3,39 +3,29 @@
 //  OralableCore
 //
 //  Created: January 13, 2026
+//  Updated: January 15, 2026 - Simplified to normalized-only detection
 //
-//  Detection mode for event detection threshold comparison.
+//  Detection is always normalized (percentage above calibrated baseline).
 //
 
 import Foundation
 
-/// Detection mode for event threshold comparison
+/// Detection mode - always normalized
+/// Kept as enum for API compatibility, but only .normalized is available
 public enum DetectionMode: String, Codable, CaseIterable, Sendable {
-    /// Fixed absolute threshold value (e.g., 150,000)
-    case absolute = "Absolute"
-
     /// Percentage above calibrated baseline (e.g., 40%)
     case normalized = "Normalized"
 
     public var displayName: String {
-        switch self {
-        case .absolute:
-            return "Absolute (Fixed)"
-        case .normalized:
-            return "Normalized (Recommended)"
-        }
+        "Normalized"
     }
 
     public var description: String {
-        switch self {
-        case .absolute:
-            return "Uses a fixed threshold value. May need adjustment for different users."
-        case .normalized:
-            return "Uses percentage above your baseline. Works consistently across users."
-        }
+        "Uses percentage above your baseline. Works consistently across users."
     }
 
+    /// Always requires calibration
     public var requiresCalibration: Bool {
-        self == .normalized
+        true
     }
 }

@@ -3,7 +3,7 @@
 //  OralableCore
 //
 //  Created: January 8, 2026
-//  Updated: January 13, 2026 - Added normalized PPG values and baseline
+//  Updated: January 15, 2026 - Added validation-based coloring (valid=green, invalid=black)
 //
 //  Represents a single muscle activity event detected by threshold crossing.
 //
@@ -11,10 +11,13 @@
 //  - Activity: PPG IR above threshold (muscle contraction)
 //  - Rest: PPG IR below threshold (muscle relaxation)
 //
-//  Supports both raw IR values and normalized percentages.
+//  Validation Coloring:
+//  - Valid events (biometric data present): Green
+//  - Invalid events (no biometric data in window): Black
 //
 
 import Foundation
+
 #if canImport(SwiftUI)
 import SwiftUI
 #endif
@@ -27,11 +30,13 @@ public enum EventType: String, Codable, CaseIterable, Sendable {
     case rest = "Rest"          // IR below threshold
 
     #if canImport(SwiftUI)
-    /// Color for chart display
+    /// Legacy color for event type (deprecated - use MuscleActivityEvent.displayColor instead)
     public var color: Color {
         switch self {
-        case .activity: return .red
-        case .rest: return .green
+        case .activity:
+            return .red
+        case .rest:
+            return .green
         }
     }
     #endif
@@ -128,7 +133,29 @@ public struct MuscleActivityEvent: Codable, Identifiable, Equatable, Sendable {
 
     // MARK: - Validation
 
+    /// Whether this event has valid biometric data in the validation window
     public let isValid: Bool
+
+    // MARK: - Display Properties
+
+    #if canImport(SwiftUI)
+    /// Color for chart display based on validation status
+    /// - Valid events: Green
+    /// - Invalid events: Black
+    public var displayColor: Color {
+        isValid ? .green : .black
+    }
+
+    /// Color with opacity for chart display
+    public var displayColorWithOpacity: Color {
+        isValid ? Color.green.opacity(0.8) : Color.black.opacity(0.6)
+    }
+    #endif
+
+    /// Validation status description
+    public var validationDescription: String {
+        isValid ? "Valid" : "Invalid"
+    }
 
     // MARK: - Init
 
@@ -174,5 +201,40 @@ public struct MuscleActivityEvent: Codable, Identifiable, Equatable, Sendable {
         self.spO2 = spO2
         self.sleepState = sleepState
         self.isValid = isValid
+    }
+}
+
+// MARK: - Array Extension
+
+public extension Array where Element == MuscleActivityEvent {
+
+    /// Filter to valid events only
+    var validEvents: [MuscleActivityEvent] {
+        filter { $0.isValid }
+    }
+
+    /// Filter to invalid events only
+    var invalidEvents: [MuscleActivityEvent] {
+        filter { !$0.isValid }
+    }
+
+    /// Count of valid events
+    var validCount: Int {
+        filter { $0.isValid }.count
+    }
+
+    /// Count of invalid events
+    var invalidCount: Int {
+        filter { !$0.isValid }.count
+    }
+
+    /// Activity events (regardless of validation)
+    var activityEvents: [MuscleActivityEvent] {
+        filter { $0.eventType == .activity }
+    }
+
+    /// Rest events (regardless of validation)
+    var restEvents: [MuscleActivityEvent] {
+        filter { $0.eventType == .rest }
     }
 }

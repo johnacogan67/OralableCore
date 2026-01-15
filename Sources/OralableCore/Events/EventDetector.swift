@@ -3,15 +3,16 @@
 //  OralableCore
 //
 //  Created: January 8, 2026
-//  Updated: January 13, 2026 - Added normalization support and calibration
+//  Updated: January 15, 2026 - Normalized-only detection, keep all events
 //
 //  Real-time event detector for muscle activity monitoring.
 //
 //  Features:
-//  - Supports absolute and normalized detection modes
+//  - Normalized detection mode (percentage above baseline)
 //  - Real-time streaming (no raw sample storage)
-//  - Calibration for normalized mode
+//  - Calibration required before recording
 //  - Event validation based on recent metrics
+//  - Keeps ALL events (valid and invalid) for analysis
 //
 //  Memory Efficiency:
 //  - Only stores completed events
@@ -27,13 +28,7 @@ public class EventDetector: ObservableObject {
 
     // MARK: - Configuration
 
-    /// Detection mode (absolute or normalized)
-    @Published public var detectionMode: DetectionMode = .normalized
-
-    /// Absolute threshold (when detectionMode = .absolute)
-    @Published public var absoluteThreshold: Int = 150000
-
-    /// Normalized threshold as percentage (when detectionMode = .normalized)
+    /// Normalized threshold as percentage (e.g., 40% above baseline)
     @Published public var normalizedThresholdPercent: Double = 40.0
 
     /// Validation window in seconds
@@ -71,8 +66,23 @@ public class EventDetector: ObservableObject {
 
     @Published public private(set) var totalSamplesProcessed: Int = 0
     @Published public private(set) var samplesDiscarded: Int = 0
-    @Published public private(set) var eventsDetected: Int = 0
-    @Published public private(set) var eventsDiscarded: Int = 0
+    @Published public private(set) var validEventCount: Int = 0
+    @Published public private(set) var invalidEventCount: Int = 0
+
+    /// Total events detected (valid + invalid)
+    public var totalEventsDetected: Int {
+        validEventCount + invalidEventCount
+    }
+
+    /// Legacy property for backwards compatibility
+    public var eventsDetected: Int {
+        totalEventsDetected
+    }
+
+    /// Legacy property for backwards compatibility
+    public var eventsDiscarded: Int {
+        invalidEventCount
+    }
 
     // MARK: - Metric History (for validation)
 
@@ -83,8 +93,18 @@ public class EventDetector: ObservableObject {
 
     // MARK: - Callbacks
 
+    /// Called for EVERY event detected (both valid and invalid)
     public var onEventDetected: ((MuscleActivityEvent) -> Void)?
-    public var onEventDiscarded: ((MuscleActivityEvent) -> Void)?
+
+    /// Called specifically for invalid events (optional, for logging)
+    public var onInvalidEventDetected: ((MuscleActivityEvent) -> Void)?
+
+    /// Legacy callback - now points to onInvalidEventDetected
+    public var onEventDiscarded: ((MuscleActivityEvent) -> Void)? {
+        get { onInvalidEventDetected }
+        set { onInvalidEventDetected = newValue }
+    }
+
     public var onSampleProcessed: (() -> Void)?
     public var onCalibrationProgress: ((Double) -> Void)?
     public var onCalibrationComplete: ((Double) -> Void)?
@@ -92,16 +112,18 @@ public class EventDetector: ObservableObject {
 
     // MARK: - Init
 
-    public init(
+    public init(normalizedThresholdPercent: Double = 40.0) {
+        self.normalizedThresholdPercent = normalizedThresholdPercent
+        setupCalibrationCallbacks()
+    }
+
+    /// Legacy init for API compatibility - ignores detectionMode and absoluteThreshold
+    public convenience init(
         detectionMode: DetectionMode = .normalized,
         absoluteThreshold: Int = 150000,
         normalizedThresholdPercent: Double = 40.0
     ) {
-        self.detectionMode = detectionMode
-        self.absoluteThreshold = absoluteThreshold
-        self.normalizedThresholdPercent = normalizedThresholdPercent
-
-        setupCalibrationCallbacks()
+        self.init(normalizedThresholdPercent: normalizedThresholdPercent)
     }
 
     private func setupCalibrationCallbacks() {
@@ -130,7 +152,7 @@ public class EventDetector: ObservableObject {
 
     // MARK: - Calibration Control
 
-    /// Start calibration for normalized detection
+    /// Start calibration (required before recording)
     public func startCalibration() {
         calibrationManager.startCalibration()
         calibrationState = .calibrating(progress: 0)
@@ -146,25 +168,29 @@ public class EventDetector: ObservableObject {
 
     /// Check if detector is ready for recording
     public var isReadyForRecording: Bool {
-        switch detectionMode {
-        case .absolute:
-            return true
-        case .normalized:
-            return calibrationState.isCalibrated
-        }
+        calibrationState.isCalibrated
     }
 
     /// Get effective threshold for display
     public var effectiveThreshold: String {
-        switch detectionMode {
-        case .absolute:
-            return "\(absoluteThreshold)"
-        case .normalized:
-            if let absThreshold = calibrationManager.thresholdToAbsolute(normalizedThresholdPercent) {
-                return "\(Int(normalizedThresholdPercent))% (\(absThreshold))"
-            }
-            return "\(Int(normalizedThresholdPercent))%"
+        if let absThreshold = calibrationManager.thresholdToAbsolute(normalizedThresholdPercent) {
+            return "\(Int(normalizedThresholdPercent))% (\(absThreshold))"
         }
+        return "\(Int(normalizedThresholdPercent))%"
+    }
+
+    // MARK: - Legacy Properties (for API compatibility)
+
+    /// Always returns .normalized
+    public var detectionMode: DetectionMode {
+        get { .normalized }
+        set { /* ignored - always normalized */ }
+    }
+
+    /// Legacy property - no longer used
+    public var absoluteThreshold: Int {
+        get { 150000 }
+        set { /* ignored - always use normalized */ }
     }
 
     // MARK: - Metric Updates
@@ -223,24 +249,15 @@ public class EventDetector: ObservableObject {
             return
         }
 
-        // Determine if above threshold
-        let aboveThreshold: Bool
-        let normalizedValue: Double?
-
-        switch detectionMode {
-        case .absolute:
-            aboveThreshold = irValue > absoluteThreshold
-            normalizedValue = calibrationManager.normalize(irValue)  // Calculate if available
-
-        case .normalized:
-            guard let normalized = calibrationManager.normalize(irValue) else {
-                // Not calibrated - skip
-                samplesDiscarded += 1
-                return
-            }
-            normalizedValue = normalized
-            aboveThreshold = normalized > normalizedThresholdPercent
+        // Normalize the IR value
+        guard let normalizedValue = calibrationManager.normalize(irValue) else {
+            // Not calibrated - skip
+            samplesDiscarded += 1
+            return
         }
+
+        // Determine if above threshold
+        let aboveThreshold = normalizedValue > normalizedThresholdPercent
 
         // First sample - initialize state
         if currentEventType == nil {
@@ -281,9 +298,7 @@ public class EventDetector: ObservableObject {
         } else {
             // Update running averages (sample not stored)
             eventIRSum += Int64(irValue)
-            if let normalized = normalizedValue {
-                eventNormalizedSum += normalized
-            }
+            eventNormalizedSum += normalizedValue
             eventSampleCount += 1
             samplesDiscarded += 1
         }
@@ -294,7 +309,7 @@ public class EventDetector: ObservableObject {
     private func startEvent(
         eventType: EventType,
         irValue: Int,
-        normalizedValue: Double?,
+        normalizedValue: Double,
         timestamp: Date,
         accelX: Int,
         accelY: Int,
@@ -306,7 +321,7 @@ public class EventDetector: ObservableObject {
         eventStartIR = irValue
         eventStartNormalized = normalizedValue
         eventIRSum = Int64(irValue)
-        eventNormalizedSum = normalizedValue ?? 0
+        eventNormalizedSum = normalizedValue
         eventSampleCount = 1
         eventStartAccel = (accelX, accelY, accelZ)
         eventStartTemperature = temperature
@@ -358,13 +373,16 @@ public class EventDetector: ObservableObject {
             isValid: isValid
         )
 
+        // Track counts
         if isValid {
-            eventsDetected += 1
-            onEventDetected?(event)
+            validEventCount += 1
         } else {
-            eventsDiscarded += 1
-            onEventDiscarded?(event)
+            invalidEventCount += 1
+            onInvalidEventDetected?(event)
         }
+
+        // ALWAYS emit the event (valid or invalid)
+        onEventDetected?(event)
 
         resetEventState()
     }
@@ -415,21 +433,6 @@ public class EventDetector: ObservableObject {
 
     // MARK: - Statistics
 
-    /// Total number of events detected (valid + discarded)
-    public var totalEventsDetected: Int {
-        eventsDetected + eventsDiscarded
-    }
-
-    /// Number of events discarded due to validation failure
-    public var discardedEventCount: Int {
-        eventsDiscarded
-    }
-
-    /// Number of valid events
-    public var validEventCount: Int {
-        eventsDetected
-    }
-
     /// Streaming statistics tuple
     public var statistics: (processed: Int, discarded: Int, eventsDetected: Int) {
         (totalSamplesProcessed, samplesDiscarded, eventCounter)
@@ -444,9 +447,10 @@ public class EventDetector: ObservableObject {
         eventCounter = 0
         totalSamplesProcessed = 0
         samplesDiscarded = 0
-        eventsDetected = 0
-        eventsDiscarded = 0
+        validEventCount = 0
+        invalidEventCount = 0
         lastIRValue = 0
+
         hrHistory.removeAll()
         spO2History.removeAll()
         sleepHistory.removeAll()

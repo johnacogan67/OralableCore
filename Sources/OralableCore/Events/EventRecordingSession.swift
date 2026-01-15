@@ -3,15 +3,15 @@
 //  OralableCore
 //
 //  Created: January 8, 2026
-//  Updated: January 13, 2026 - Added calibration flow and session states
+//  Updated: January 15, 2026 - Normalized-only detection, store all events
 //
 //  Manages a recording session with real-time event detection.
 //
 //  Features:
-//  - Calibration phase before recording
-//  - Real-time event caching
+//  - Calibration phase before recording (always required)
+//  - Real-time event caching (ALL events, valid and invalid)
 //  - Memory-efficient (only stores events)
-//  - Session statistics
+//  - Session statistics with valid/invalid breakdown
 //
 
 import Foundation
@@ -46,11 +46,17 @@ public class EventRecordingSession: ObservableObject {
 
     @Published public private(set) var sessionState: SessionState = .idle
     @Published public private(set) var eventCount: Int = 0
-    @Published public private(set) var discardedEventCount: Int = 0
+    @Published public private(set) var validEventCount: Int = 0
+    @Published public private(set) var invalidEventCount: Int = 0
     @Published public private(set) var samplesProcessed: Int = 0
     @Published public private(set) var recordingDuration: TimeInterval = 0
     @Published public private(set) var estimatedMemoryBytes: Int = 0
     @Published public private(set) var lastEventTime: Date?
+
+    /// Legacy property - returns invalidEventCount
+    public var discardedEventCount: Int {
+        invalidEventCount
+    }
 
     // MARK: - Event Storage
 
@@ -71,21 +77,22 @@ public class EventRecordingSession: ObservableObject {
 
     // MARK: - Init
 
-    public init(
+    public init(normalizedThresholdPercent: Double = 40.0) {
+        self.eventDetector = EventDetector(normalizedThresholdPercent: normalizedThresholdPercent)
+        setupCallbacks()
+    }
+
+    /// Legacy init for API compatibility
+    public convenience init(
         detectionMode: DetectionMode = .normalized,
         absoluteThreshold: Int = 150000,
         normalizedThresholdPercent: Double = 40.0
     ) {
-        self.eventDetector = EventDetector(
-            detectionMode: detectionMode,
-            absoluteThreshold: absoluteThreshold,
-            normalizedThresholdPercent: normalizedThresholdPercent
-        )
-
-        setupCallbacks()
+        self.init(normalizedThresholdPercent: normalizedThresholdPercent)
     }
 
     private func setupCallbacks() {
+        // Receive ALL events (valid and invalid)
         eventDetector.onEventDetected = { [weak self] event in
             guard let self = self else { return }
             DispatchQueue.main.async {
@@ -93,13 +100,14 @@ public class EventRecordingSession: ObservableObject {
                 self.eventCount = self.cachedEvents.count
                 self.lastEventTime = event.endTimestamp
                 self.updateMemoryEstimate()
-                self.onEventDetected?(event)
-            }
-        }
 
-        eventDetector.onEventDiscarded = { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.discardedEventCount += 1
+                if event.isValid {
+                    self.validEventCount += 1
+                } else {
+                    self.invalidEventCount += 1
+                }
+
+                self.onEventDetected?(event)
             }
         }
 
@@ -131,13 +139,14 @@ public class EventRecordingSession: ObservableObject {
 
     // MARK: - Session Control
 
-    /// Start calibration (required for normalized mode)
+    /// Start calibration (required before recording)
     public func startCalibration() {
         guard sessionState == .idle || sessionState == .stopped else { return }
 
         cachedEvents.removeAll()
         eventCount = 0
-        discardedEventCount = 0
+        validEventCount = 0
+        invalidEventCount = 0
         samplesProcessed = 0
         estimatedMemoryBytes = 0
         lastEventTime = nil
@@ -149,31 +158,18 @@ public class EventRecordingSession: ObservableObject {
         Logger.shared.info("[EventRecordingSession] Calibration started")
     }
 
-    /// Start recording (after calibration for normalized mode)
+    /// Start recording (after calibration)
     public func startRecording() {
-        // Allow starting in absolute mode without calibration
-        if eventDetector.detectionMode == .absolute {
-            if sessionState == .idle || sessionState == .stopped {
-                cachedEvents.removeAll()
-                eventCount = 0
-                discardedEventCount = 0
-                samplesProcessed = 0
-                estimatedMemoryBytes = 0
-                lastEventTime = nil
-                eventDetector.reset()
-            }
-        } else {
-            // Normalized mode requires calibration
-            guard sessionState.canStartRecording else {
-                Logger.shared.warning("[EventRecordingSession] Cannot start - not calibrated")
-                return
-            }
+        guard sessionState.canStartRecording else {
+            Logger.shared.warning("[EventRecordingSession] Cannot start - calibration required")
+            return
         }
 
         if sessionState == .stopped {
             cachedEvents.removeAll()
             eventCount = 0
-            discardedEventCount = 0
+            validEventCount = 0
+            invalidEventCount = 0
             samplesProcessed = 0
             estimatedMemoryBytes = 0
             lastEventTime = nil
@@ -203,7 +199,7 @@ public class EventRecordingSession: ObservableObject {
         durationTimer = nil
         sessionState = .stopped
 
-        Logger.shared.info("[EventRecordingSession] Recording stopped: \(eventCount) events, \(samplesProcessed) samples")
+        Logger.shared.info("[EventRecordingSession] Recording stopped: \(eventCount) events (\(validEventCount) valid, \(invalidEventCount) invalid)")
     }
 
     /// Reset session completely
@@ -213,7 +209,8 @@ public class EventRecordingSession: ObservableObject {
 
         cachedEvents.removeAll()
         eventCount = 0
-        discardedEventCount = 0
+        validEventCount = 0
+        invalidEventCount = 0
         samplesProcessed = 0
         recordingDuration = 0
         estimatedMemoryBytes = 0
@@ -233,7 +230,6 @@ public class EventRecordingSession: ObservableObject {
         accelZ: Int,
         temperature: Double
     ) {
-        // Allow during calibration or recording
         guard sessionState == .recording || sessionState.isCalibrating else { return }
 
         samplesProcessed += 1
@@ -270,14 +266,16 @@ public class EventRecordingSession: ObservableObject {
 
     // MARK: - Configuration
 
+    /// Always returns .normalized
     public var detectionMode: DetectionMode {
-        get { eventDetector.detectionMode }
-        set { eventDetector.detectionMode = newValue }
+        get { .normalized }
+        set { /* ignored */ }
     }
 
+    /// Legacy property - no longer used
     public var absoluteThreshold: Int {
-        get { eventDetector.absoluteThreshold }
-        set { eventDetector.absoluteThreshold = newValue }
+        get { 150000 }
+        set { /* ignored */ }
     }
 
     public var normalizedThresholdPercent: Double {
@@ -287,9 +285,19 @@ public class EventRecordingSession: ObservableObject {
 
     // MARK: - Results
 
-    /// Get all detected events
+    /// Get all detected events (valid and invalid)
     public var events: [MuscleActivityEvent] {
         cachedEvents
+    }
+
+    /// Get only valid events
+    public var validEvents: [MuscleActivityEvent] {
+        cachedEvents.filter { $0.isValid }
+    }
+
+    /// Get only invalid events
+    public var invalidEvents: [MuscleActivityEvent] {
+        cachedEvents.filter { !$0.isValid }
     }
 
     /// Check if recording is active
@@ -304,7 +312,8 @@ public class EventRecordingSession: ObservableObject {
             duration: recordingDuration,
             samplesProcessed: samplesProcessed,
             eventsDetected: eventCount,
-            eventsDiscarded: discardedEventCount,
+            validEvents: validEventCount,
+            invalidEvents: invalidEventCount,
             estimatedMemoryBytes: estimatedMemoryBytes,
             baseline: eventDetector.baseline
         )
@@ -364,15 +373,17 @@ public struct SessionSummary: Sendable {
     public let duration: TimeInterval
     public let samplesProcessed: Int
     public let eventsDetected: Int
-    public let eventsDiscarded: Int
+    public let validEvents: Int
+    public let invalidEvents: Int
     public let estimatedMemoryBytes: Int
     public let baseline: Double
+
+    public var eventsDiscarded: Int { invalidEvents }
 
     public var formattedDuration: String {
         let h = Int(duration) / 3600
         let m = (Int(duration) % 3600) / 60
         let s = Int(duration) % 60
-
         if h > 0 {
             return String(format: "%d:%02d:%02d", h, m, s)
         }
@@ -393,5 +404,11 @@ public struct SessionSummary: Sendable {
         let continuousBytes = samplesProcessed * 100
         let savings = 100.0 - (Double(estimatedMemoryBytes) / Double(continuousBytes) * 100.0)
         return String(format: "%.1f%% reduction", max(0, savings))
+    }
+
+    public var validationRate: String {
+        guard eventsDetected > 0 else { return "N/A" }
+        let rate = Double(validEvents) / Double(eventsDetected) * 100.0
+        return String(format: "%.1f%% valid", rate)
     }
 }
