@@ -140,15 +140,28 @@ public struct MuscleActivityEvent: Codable, Identifiable, Equatable, Sendable {
 
     #if canImport(SwiftUI)
     /// Color for chart display based on validation status
+    /// Uses ColorSystem for consistent styling across apps
     /// - Valid events: Green
     /// - Invalid events: Black
     public var displayColor: Color {
-        isValid ? .green : .black
+        let colors = DesignSystem.shared.colors
+        return isValid ? colors.eventValid : colors.eventInvalid
     }
 
     /// Color with opacity for chart display
     public var displayColorWithOpacity: Color {
-        isValid ? Color.green.opacity(0.8) : Color.black.opacity(0.6)
+        let colors = DesignSystem.shared.colors
+        if isValid {
+            return colors.eventValid.opacity(colors.eventValidOpacity)
+        } else {
+            return colors.eventInvalid.opacity(colors.eventInvalidOpacity)
+        }
+    }
+
+    /// Opacity value for chart display
+    public var displayOpacity: Double {
+        let colors = DesignSystem.shared.colors
+        return isValid ? colors.eventValidOpacity : colors.eventInvalidOpacity
     }
     #endif
 

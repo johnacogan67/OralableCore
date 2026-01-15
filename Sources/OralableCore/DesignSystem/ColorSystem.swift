@@ -135,6 +135,37 @@ public struct ColorSystem: Sendable {
     /// Oral wellness metric color
     public let oralWellness: Color
 
+    // MARK: - Event Validation Colors
+
+    /// Valid event color (events with biometric data in validation window)
+    public let eventValid: Color
+
+    /// Invalid event color (events without biometric data in validation window)
+    public let eventInvalid: Color
+
+    /// Valid event opacity for charts
+    public let eventValidOpacity: Double
+
+    /// Invalid event opacity for charts
+    public let eventInvalidOpacity: Double
+
+    // MARK: - PPG Chart Colors
+
+    /// PPG Infrared channel color
+    public let ppgInfraredChart: Color
+
+    /// PPG Red channel color
+    public let ppgRedChart: Color
+
+    /// PPG Green channel color
+    public let ppgGreenChart: Color
+
+    /// Threshold line color
+    public let thresholdLine: Color
+
+    /// Baseline indicator color
+    public let baselineIndicator: Color
+
     // MARK: - Shadow
 
     /// Shadow color
@@ -223,6 +254,19 @@ public struct ColorSystem: Sendable {
         self.movement = Color.blue
         self.muscleActivity = Color.purple
         self.oralWellness = Color.purple
+
+        // Event validation colors
+        self.eventValid = Color.green
+        self.eventInvalid = Color.black
+        self.eventValidOpacity = 0.8
+        self.eventInvalidOpacity = 0.6
+
+        // PPG Chart colors
+        self.ppgInfraredChart = Color.red.opacity(0.7)
+        self.ppgRedChart = Color.pink.opacity(0.6)
+        self.ppgGreenChart = Color.green.opacity(0.6)
+        self.thresholdLine = Color.orange
+        self.baselineIndicator = Color.blue.opacity(0.5)
 
         // Shadow
         self.shadow = Color.black.opacity(0.1)
