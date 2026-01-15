@@ -58,6 +58,31 @@ public class EventRecordingSession: ObservableObject {
         invalidEventCount
     }
 
+    // MARK: - Calibration State (for UI access)
+
+    /// Whether calibration is in progress
+    public var isCalibrating: Bool {
+        sessionState.isCalibrating
+    }
+
+    /// Current calibration progress (0.0 to 1.0)
+    public var calibrationProgress: Double {
+        if case .calibrating(let progress) = sessionState {
+            return progress
+        }
+        return sessionState == .calibrated || sessionState == .recording ? 1.0 : 0.0
+    }
+
+    /// Whether calibration is complete
+    public var isCalibrated: Bool {
+        eventDetector.calibrationState.isCalibrated
+    }
+
+    /// Current baseline value
+    public var baseline: Double {
+        eventDetector.baseline
+    }
+
     // MARK: - Event Storage
 
     private var cachedEvents: [MuscleActivityEvent] = []

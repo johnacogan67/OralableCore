@@ -214,7 +214,8 @@ public class EventDetector: ObservableObject {
     }
 
     public func updateTemperature(_ value: Double, at timestamp: Date = Date()) {
-        guard value >= Self.validTemperatureMin && value <= Self.validTemperatureMax else { return }
+        // Store ALL temperature readings - validation will check if any are in valid range
+        // This allows us to track warmup time and validate when device reaches 32°C
         temperatureHistory.append((timestamp, value))
         pruneHistory()
     }
@@ -343,13 +344,14 @@ public class EventDetector: ObservableObject {
         let avgIR = eventSampleCount > 0 ? Double(eventIRSum) / Double(eventSampleCount) : Double(startIR)
         let avgNormalized = eventSampleCount > 0 ? eventNormalizedSum / Double(eventSampleCount) : eventStartNormalized
 
-        // Validation
-        let isValid = hasValidMetricInWindow(before: startTimestamp)
+        // FIXED: Validation now checks from (eventStart - window) to eventEnd
+        // This allows metrics received DURING the event to count for validation
+        let isValid = hasValidMetricInWindow(eventStart: startTimestamp, eventEnd: timestamp)
 
-        // Get latest metrics
-        let latestHR = getLatestHR(before: startTimestamp)
-        let latestSpO2 = getLatestSpO2(before: startTimestamp)
-        let latestSleep = getLatestSleep(before: startTimestamp)
+        // Get latest metrics (up to event end time)
+        let latestHR = getLatestHR(before: timestamp)
+        let latestSpO2 = getLatestSpO2(before: timestamp)
+        let latestSleep = getLatestSleep(before: timestamp)
 
         let event = MuscleActivityEvent(
             eventNumber: eventCounter,
@@ -408,15 +410,32 @@ public class EventDetector: ObservableObject {
 
     // MARK: - Validation Helpers
 
-    private func hasValidMetricInWindow(before timestamp: Date) -> Bool {
-        let windowStart = timestamp.addingTimeInterval(-validationWindowSeconds)
+    /// Validate event by checking for metrics within window of event
+    /// FIXED: Now checks from (eventStart - window) to eventEnd
+    /// This allows metrics received DURING the event to count for validation
+    private func hasValidMetricInWindow(eventStart: Date, eventEnd: Date) -> Bool {
+        let windowStart = eventStart.addingTimeInterval(-validationWindowSeconds)
 
-        let hasHR = hrHistory.contains { $0.timestamp >= windowStart && $0.timestamp <= timestamp }
-        let hasSpO2 = spO2History.contains { $0.timestamp >= windowStart && $0.timestamp <= timestamp }
-        let hasSleep = sleepHistory.contains { $0.timestamp >= windowStart && $0.timestamp <= timestamp }
-        let hasTemp = temperatureHistory.contains { $0.timestamp >= windowStart && $0.timestamp <= timestamp }
+        // Check for HR in window (from windowStart to eventEnd)
+        let hasHR = hrHistory.contains { $0.timestamp >= windowStart && $0.timestamp <= eventEnd }
 
-        return hasHR || hasSpO2 || hasSleep || hasTemp
+        // Check for SpO2 in window
+        let hasSpO2 = spO2History.contains { $0.timestamp >= windowStart && $0.timestamp <= eventEnd }
+
+        // Check for sleep state in window
+        let hasSleep = sleepHistory.contains { $0.timestamp >= windowStart && $0.timestamp <= eventEnd }
+
+        // Check for VALID temperature (32-38°C) in window
+        // Temperature history now stores ALL readings, so we filter for valid range here
+        let hasValidTemp = temperatureHistory.contains { entry in
+            entry.timestamp >= windowStart &&
+            entry.timestamp <= eventEnd &&
+            entry.value >= Self.validTemperatureMin &&
+            entry.value <= Self.validTemperatureMax
+        }
+
+        // Event is valid if ANY biometric is present
+        return hasHR || hasSpO2 || hasSleep || hasValidTemp
     }
 
     private func getLatestHR(before timestamp: Date) -> Double? {
