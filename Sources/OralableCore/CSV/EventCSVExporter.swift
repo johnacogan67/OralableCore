@@ -3,54 +3,65 @@
 //  OralableCore
 //
 //  Created: January 8, 2026
-//  Exports muscle activity events to CSV format
+//  Updated: January 13, 2026 - Added normalized value columns
+//
+//  Exports muscle activity events to CSV format.
+//  Supports both raw IR values and normalized percentages.
 //
 
 import Foundation
 
-/// Exports muscle activity events to CSV format
+/// CSV exporter for muscle activity events
 public struct EventCSVExporter: Sendable {
 
-    // MARK: - Column Configuration
+    // MARK: - Export Options
 
-    /// Options for controlling which columns are included in the export
     public struct ExportOptions: Sendable {
+        public var includeNormalized: Bool
         public var includeTemperature: Bool
         public var includeHR: Bool
         public var includeSpO2: Bool
         public var includeSleep: Bool
+        public var includeAccelerometer: Bool
 
         public init(
+            includeNormalized: Bool = true,
             includeTemperature: Bool = true,
             includeHR: Bool = true,
             includeSpO2: Bool = true,
-            includeSleep: Bool = true
+            includeSleep: Bool = true,
+            includeAccelerometer: Bool = true
         ) {
+            self.includeNormalized = includeNormalized
             self.includeTemperature = includeTemperature
             self.includeHR = includeHR
             self.includeSpO2 = includeSpO2
             self.includeSleep = includeSleep
+            self.includeAccelerometer = includeAccelerometer
         }
 
         /// All metrics included
         public static var all: ExportOptions {
-            ExportOptions(includeTemperature: true, includeHR: true, includeSpO2: true, includeSleep: true)
+            ExportOptions()
         }
 
         /// No optional metrics included (only required columns)
         public static var minimal: ExportOptions {
-            ExportOptions(includeTemperature: false, includeHR: false, includeSpO2: false, includeSleep: false)
+            ExportOptions(
+                includeNormalized: false,
+                includeTemperature: false,
+                includeHR: false,
+                includeSpO2: false,
+                includeSleep: false,
+                includeAccelerometer: false
+            )
         }
     }
 
     // MARK: - Export
 
     /// Export events to CSV string
-    /// - Parameters:
-    ///   - events: Array of muscle activity events to export
-    ///   - options: Export options controlling which columns are included
-    /// - Returns: CSV content as string
-    public static func exportToCSV(events: [MuscleActivityEvent], options: ExportOptions) -> String {
+    public static func exportToCSV(events: [MuscleActivityEvent], options: ExportOptions = .all) -> String {
         var csv = buildHeader(options: options)
 
         for event in events {
@@ -69,24 +80,26 @@ public struct EventCSVExporter: Sendable {
             "Duration_ms",
             "Start_IR",
             "End_IR",
-            "Average_IR",
-            "Accel_X",
-            "Accel_Y",
-            "Accel_Z"
+            "Average_IR"
         ]
 
-        if options.includeTemperature {
-            columns.append("Temperature")
+        if options.includeNormalized {
+            columns.append(contentsOf: [
+                "Baseline",
+                "Normalized_Start_%",
+                "Normalized_End_%",
+                "Normalized_Avg_%"
+            ])
         }
-        if options.includeHR {
-            columns.append("HR")
+
+        if options.includeAccelerometer {
+            columns.append(contentsOf: ["Accel_X", "Accel_Y", "Accel_Z"])
         }
-        if options.includeSpO2 {
-            columns.append("SpO2")
-        }
-        if options.includeSleep {
-            columns.append("Sleep")
-        }
+
+        if options.includeTemperature { columns.append("Temperature") }
+        if options.includeHR { columns.append("HR") }
+        if options.includeSpO2 { columns.append("SpO2") }
+        if options.includeSleep { columns.append("Sleep") }
 
         return columns.joined(separator: ",") + "\n"
     }
@@ -103,38 +116,38 @@ public struct EventCSVExporter: Sendable {
             String(event.durationMs),
             String(event.startIR),
             String(event.endIR),
-            String(format: "%.0f", event.averageIR),
-            String(event.accelX),
-            String(event.accelY),
-            String(event.accelZ)
+            String(format: "%.0f", event.averageIR)
         ]
+
+        if options.includeNormalized {
+            values.append(event.baseline.map { String(format: "%.0f", $0) } ?? "")
+            values.append(event.normalizedStartIR.map { String(format: "%.1f", $0) } ?? "")
+            values.append(event.normalizedEndIR.map { String(format: "%.1f", $0) } ?? "")
+            values.append(event.normalizedAverageIR.map { String(format: "%.1f", $0) } ?? "")
+        }
+
+        if options.includeAccelerometer {
+            values.append(contentsOf: [
+                String(event.accelX),
+                String(event.accelY),
+                String(event.accelZ)
+            ])
+        }
 
         if options.includeTemperature {
             values.append(String(format: "%.2f", event.temperature))
         }
 
         if options.includeHR {
-            if let hr = event.heartRate {
-                values.append(String(format: "%.0f", hr))
-            } else {
-                values.append("")
-            }
+            values.append(event.heartRate.map { String(format: "%.0f", $0) } ?? "")
         }
 
         if options.includeSpO2 {
-            if let spO2 = event.spO2 {
-                values.append(String(format: "%.0f", spO2))
-            } else {
-                values.append("")
-            }
+            values.append(event.spO2.map { String(format: "%.0f", $0) } ?? "")
         }
 
         if options.includeSleep {
-            if let sleep = event.sleepState {
-                values.append(sleep.rawValue)
-            } else {
-                values.append("")
-            }
+            values.append(event.sleepState?.rawValue ?? "")
         }
 
         return values.joined(separator: ",") + "\n"
@@ -143,15 +156,9 @@ public struct EventCSVExporter: Sendable {
     // MARK: - File Export
 
     /// Export events to a CSV file
-    /// - Parameters:
-    ///   - events: Array of muscle activity events to export
-    ///   - options: Export options controlling which columns are included
-    ///   - filename: Optional custom filename (will be auto-generated if nil)
-    /// - Returns: URL of the exported file
-    /// - Throws: Error if file write fails
     public static func exportToFile(
         events: [MuscleActivityEvent],
-        options: ExportOptions,
+        options: ExportOptions = .all,
         filename: String? = nil
     ) throws -> URL {
         let csv = exportToCSV(events: events, options: options)
@@ -166,15 +173,9 @@ public struct EventCSVExporter: Sendable {
     }
 
     /// Export events to a temporary file suitable for sharing
-    /// - Parameters:
-    ///   - events: Array of muscle activity events to export
-    ///   - options: Export options controlling which columns are included
-    ///   - userIdentifier: Optional user identifier to include in filename
-    /// - Returns: URL of the exported file in the cache directory
-    /// - Throws: Error if file write fails
     public static func exportToTempFile(
         events: [MuscleActivityEvent],
-        options: ExportOptions,
+        options: ExportOptions = .all,
         userIdentifier: String? = nil
     ) throws -> URL {
         let csv = exportToCSV(events: events, options: options)
@@ -212,11 +213,7 @@ public struct EventCSVExporter: Sendable {
     // MARK: - Summary
 
     /// Get a summary of the export
-    /// - Parameters:
-    ///   - events: Events to summarize
-    ///   - options: Export options
-    /// - Returns: Summary information
-    public static func getExportSummary(events: [MuscleActivityEvent], options: ExportOptions) -> EventExportSummary {
+    public static func getExportSummary(events: [MuscleActivityEvent], options: ExportOptions = .all) -> EventExportSummary {
         let totalDurationMs = events.reduce(0) { $0 + $1.durationMs }
         let activityCount = events.filter { $0.eventType == .activity }.count
         let restCount = events.filter { $0.eventType == .rest }.count
@@ -234,8 +231,9 @@ public struct EventCSVExporter: Sendable {
             }
         }
 
-        // Estimate file size (roughly 130 bytes per row + header)
-        let estimatedBytes = (events.count * 130) + 120
+        // Estimate file size (roughly 150 bytes per row + header for normalized)
+        let bytesPerRow = options.includeNormalized ? 180 : 130
+        let estimatedBytes = (events.count * bytesPerRow) + 150
         let estimatedSize = formatByteCount(Int64(estimatedBytes))
 
         return EventExportSummary(
@@ -245,6 +243,7 @@ public struct EventCSVExporter: Sendable {
             totalDurationMs: totalDurationMs,
             dateRange: dateRange,
             estimatedSize: estimatedSize,
+            includesNormalized: options.includeNormalized,
             includesTemperature: options.includeTemperature,
             includesHR: options.includeHR,
             includesSpO2: options.includeSpO2,
@@ -273,6 +272,7 @@ public struct EventExportSummary: Sendable {
     public let totalDurationMs: Int
     public let dateRange: String
     public let estimatedSize: String
+    public let includesNormalized: Bool
     public let includesTemperature: Bool
     public let includesHR: Bool
     public let includesSpO2: Bool

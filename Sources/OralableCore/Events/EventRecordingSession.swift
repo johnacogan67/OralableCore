@@ -3,206 +3,228 @@
 //  OralableCore
 //
 //  Created: January 8, 2026
-//  Updated: January 12, 2026 - Real-time event caching with memory tracking
+//  Updated: January 13, 2026 - Added calibration flow and session states
 //
-//  Manages a recording session with real-time event detection and caching
-//  Only stores completed events - raw samples are processed and discarded
+//  Manages a recording session with real-time event detection.
+//
+//  Features:
+//  - Calibration phase before recording
+//  - Real-time event caching
+//  - Memory-efficient (only stores events)
+//  - Session statistics
 //
 
 import Foundation
 import Combine
 
-/// Manages a recording session with real-time event detection and caching
-/// Only stores completed events - raw samples are processed and discarded
+// MARK: - Session State
+
+/// Recording session state
+public enum SessionState: Equatable, Sendable {
+    case idle
+    case calibrating(progress: Double)
+    case calibrated
+    case recording
+    case stopped
+
+    public var canStartRecording: Bool {
+        self == .calibrated || self == .stopped
+    }
+
+    public var isCalibrating: Bool {
+        if case .calibrating = self { return true }
+        return false
+    }
+}
+
+// MARK: - Event Recording Session
+
+/// Manages a recording session with real-time event detection
 public class EventRecordingSession: ObservableObject {
 
     // MARK: - Published State
 
-    @Published public private(set) var isRecording: Bool = false
-    @Published public private(set) var events: [MuscleActivityEvent] = []
+    @Published public private(set) var sessionState: SessionState = .idle
     @Published public private(set) var eventCount: Int = 0
-    @Published public private(set) var discardedCount: Int = 0
-    @Published public private(set) var sessionStartTime: Date?
-    @Published public private(set) var lastEventTime: Date?
-    @Published public private(set) var recordingDuration: TimeInterval = 0
-
-    // MARK: - Streaming Statistics
-
+    @Published public private(set) var discardedEventCount: Int = 0
     @Published public private(set) var samplesProcessed: Int = 0
-    @Published public private(set) var samplesDiscarded: Int = 0
-
-    // MARK: - Memory Tracking
-
+    @Published public private(set) var recordingDuration: TimeInterval = 0
     @Published public private(set) var estimatedMemoryBytes: Int = 0
-    private let bytesPerEvent: Int = 200  // Approximate size of MuscleActivityEvent
+    @Published public private(set) var lastEventTime: Date?
 
-    // MARK: - Event Cache (only completed events stored)
+    // MARK: - Event Storage
 
-    private var discardedEvents: [MuscleActivityEvent] = []
+    private var cachedEvents: [MuscleActivityEvent] = []
+    private let bytesPerEvent: Int = 250
 
     // MARK: - Components
 
-    private let eventDetector: EventDetector
+    public let eventDetector: EventDetector
     private var durationTimer: Timer?
-    private var lastIRValue: Int = 0
+    private var recordingStartTime: Date?
 
-    // MARK: - Configuration
+    // MARK: - Callbacks
 
-    public var threshold: Int {
-        get { eventDetector.threshold }
-        set { eventDetector.threshold = newValue }
-    }
+    public var onEventDetected: ((MuscleActivityEvent) -> Void)?
+    public var onCalibrationComplete: ((Double) -> Void)?
+    public var onCalibrationFailed: ((String) -> Void)?
 
     // MARK: - Init
 
-    public init(threshold: Int = 150000) {
-        self.eventDetector = EventDetector(threshold: threshold)
-        setupEventDetectorCallbacks()
+    public init(
+        detectionMode: DetectionMode = .normalized,
+        absoluteThreshold: Int = 150000,
+        normalizedThresholdPercent: Double = 40.0
+    ) {
+        self.eventDetector = EventDetector(
+            detectionMode: detectionMode,
+            absoluteThreshold: absoluteThreshold,
+            normalizedThresholdPercent: normalizedThresholdPercent
+        )
+
+        setupCallbacks()
     }
 
-    private func setupEventDetectorCallbacks() {
-        // Event detected and valid - cache it
+    private func setupCallbacks() {
         eventDetector.onEventDetected = { [weak self] event in
-            self?.handleEventDetected(event)
-        }
-
-        // Event detected but invalid - track but don't cache
-        eventDetector.onEventDiscarded = { [weak self] event in
-            self?.handleEventDiscarded(event)
-        }
-
-        // Sample processed but not part of event boundary
-        eventDetector.onSampleDiscarded = { [weak self] in
+            guard let self = self else { return }
             DispatchQueue.main.async {
-                self?.samplesDiscarded += 1
+                self.cachedEvents.append(event)
+                self.eventCount = self.cachedEvents.count
+                self.lastEventTime = event.endTimestamp
+                self.updateMemoryEstimate()
+                self.onEventDetected?(event)
             }
         }
-    }
 
-    private func handleEventDetected(_ event: MuscleActivityEvent) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.events.append(event)
-            self.eventCount = self.events.count
-            self.lastEventTime = event.endTimestamp
-            self.updateMemoryEstimate()
-
-            #if DEBUG
-            Logger.shared.debug("[EventRecordingSession] Event #\(event.eventNumber) cached: \(event.eventType.rawValue), duration: \(event.durationMs)ms")
-            #endif
+        eventDetector.onEventDiscarded = { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.discardedEventCount += 1
+            }
         }
-    }
 
-    private func handleEventDiscarded(_ event: MuscleActivityEvent) {
-        DispatchQueue.main.async { [weak self] in
+        eventDetector.onCalibrationComplete = { [weak self] baseline in
             guard let self = self else { return }
-            self.discardedEvents.append(event)
-            self.discardedCount = self.discardedEvents.count
+            DispatchQueue.main.async {
+                self.sessionState = .calibrated
+                self.onCalibrationComplete?(baseline)
+            }
+        }
 
-            #if DEBUG
-            Logger.shared.debug("[EventRecordingSession] Event #\(event.eventNumber) discarded (invalid)")
-            #endif
+        eventDetector.onCalibrationFailed = { [weak self] reason in
+            DispatchQueue.main.async {
+                self?.sessionState = .idle
+                self?.onCalibrationFailed?(reason)
+            }
+        }
+
+        eventDetector.onCalibrationProgress = { [weak self] progress in
+            DispatchQueue.main.async {
+                self?.sessionState = .calibrating(progress: progress)
+            }
         }
     }
 
     private func updateMemoryEstimate() {
-        estimatedMemoryBytes = events.count * bytesPerEvent
+        estimatedMemoryBytes = cachedEvents.count * bytesPerEvent
     }
 
-    // MARK: - Recording Control
+    // MARK: - Session Control
 
-    /// Start a new recording session
-    public func startRecording() {
-        // Reset state
-        events.removeAll()
-        discardedEvents.removeAll()
-        eventDetector.reset()
+    /// Start calibration (required for normalized mode)
+    public func startCalibration() {
+        guard sessionState == .idle || sessionState == .stopped else { return }
 
+        cachedEvents.removeAll()
         eventCount = 0
-        discardedCount = 0
+        discardedEventCount = 0
         samplesProcessed = 0
-        samplesDiscarded = 0
-        recordingDuration = 0
         estimatedMemoryBytes = 0
         lastEventTime = nil
 
-        sessionStartTime = Date()
-        isRecording = true
+        eventDetector.reset()
+        eventDetector.startCalibration()
+        sessionState = .calibrating(progress: 0)
 
-        // Start duration timer
+        Logger.shared.info("[EventRecordingSession] Calibration started")
+    }
+
+    /// Start recording (after calibration for normalized mode)
+    public func startRecording() {
+        // Allow starting in absolute mode without calibration
+        if eventDetector.detectionMode == .absolute {
+            if sessionState == .idle || sessionState == .stopped {
+                cachedEvents.removeAll()
+                eventCount = 0
+                discardedEventCount = 0
+                samplesProcessed = 0
+                estimatedMemoryBytes = 0
+                lastEventTime = nil
+                eventDetector.reset()
+            }
+        } else {
+            // Normalized mode requires calibration
+            guard sessionState.canStartRecording else {
+                Logger.shared.warning("[EventRecordingSession] Cannot start - not calibrated")
+                return
+            }
+        }
+
+        if sessionState == .stopped {
+            cachedEvents.removeAll()
+            eventCount = 0
+            discardedEventCount = 0
+            samplesProcessed = 0
+            estimatedMemoryBytes = 0
+            lastEventTime = nil
+            eventDetector.reset()
+        }
+
+        recordingStartTime = Date()
+        sessionState = .recording
+
         durationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self = self, let start = self.sessionStartTime else { return }
+            guard let self = self, let start = self.recordingStartTime else { return }
             DispatchQueue.main.async {
                 self.recordingDuration = Date().timeIntervalSince(start)
             }
         }
 
-        Logger.shared.info("[EventRecordingSession] Recording started (real-time event detection)")
+        Logger.shared.info("[EventRecordingSession] Recording started")
     }
 
-    /// Stop the current recording session
+    /// Stop recording
     public func stopRecording() {
-        guard isRecording else { return }
+        guard sessionState == .recording else { return }
 
-        // Finalize any in-progress event
-        eventDetector.finalizeCurrentEvent(endIR: lastIRValue, timestamp: Date())
+        eventDetector.finalizeCurrentEvent()
 
         durationTimer?.invalidate()
         durationTimer = nil
-        isRecording = false
+        sessionState = .stopped
 
-        let stats = eventDetector.statistics
-        Logger.shared.info("[EventRecordingSession] Recording stopped")
-        Logger.shared.info("[EventRecordingSession] Stats: \(stats.processed) samples → \(eventCount) events (\(stats.discarded) samples discarded)")
-        Logger.shared.info("[EventRecordingSession] Memory: ~\(estimatedMemoryBytes / 1024) KB for \(eventCount) events")
+        Logger.shared.info("[EventRecordingSession] Recording stopped: \(eventCount) events, \(samplesProcessed) samples")
     }
 
-    /// Pause recording (events will be ignored)
-    public func pauseRecording() {
-        durationTimer?.invalidate()
-        durationTimer = nil
-        isRecording = false
+    /// Reset session completely
+    public func reset() {
+        stopRecording()
+        eventDetector.fullReset()
+
+        cachedEvents.removeAll()
+        eventCount = 0
+        discardedEventCount = 0
+        samplesProcessed = 0
+        recordingDuration = 0
+        estimatedMemoryBytes = 0
+        recordingStartTime = nil
+        lastEventTime = nil
+        sessionState = .idle
     }
 
-    /// Resume recording from paused state
-    public func resumeRecording() {
-        isRecording = true
-        // Restart duration timer from current duration
-        durationTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            guard let self = self, let start = self.sessionStartTime else { return }
-            DispatchQueue.main.async {
-                self.recordingDuration = Date().timeIntervalSince(start)
-            }
-        }
-    }
+    // MARK: - Sample Processing
 
-    // MARK: - Session Duration
-
-    /// Duration of the current session in seconds
-    public var sessionDuration: TimeInterval {
-        guard let startTime = sessionStartTime else { return 0 }
-        return Date().timeIntervalSince(startTime)
-    }
-
-    /// Formatted session duration (MM:SS)
-    public var formattedSessionDuration: String {
-        let duration = sessionDuration
-        let minutes = Int(duration / 60)
-        let seconds = Int(duration) % 60
-        return String(format: "%02d:%02d", minutes, seconds)
-    }
-
-    // MARK: - Sample Processing (Real-Time)
-
-    /// Process a sensor sample in real-time
-    /// The sample is evaluated for events and then discarded from memory
-    /// - Parameters:
-    ///   - irValue: PPG IR value
-    ///   - timestamp: Sample timestamp
-    ///   - accelX: Nearest accelerometer X
-    ///   - accelY: Nearest accelerometer Y
-    ///   - accelZ: Nearest accelerometer Z
-    ///   - temperature: Current temperature
+    /// Process incoming sensor sample
     public func processSample(
         irValue: Int,
         timestamp: Date,
@@ -211,9 +233,9 @@ public class EventRecordingSession: ObservableObject {
         accelZ: Int,
         temperature: Double
     ) {
-        guard isRecording else { return }
+        // Allow during calibration or recording
+        guard sessionState == .recording || sessionState.isCalibrating else { return }
 
-        lastIRValue = irValue
         samplesProcessed += 1
 
         eventDetector.processSample(
@@ -226,164 +248,135 @@ public class EventRecordingSession: ObservableObject {
         )
     }
 
-    /// Update HR metric (call continuously during recording)
-    /// - Parameters:
-    ///   - value: Heart rate in BPM
-    ///   - timestamp: When the measurement was taken
+    /// Update heart rate for validation
     public func updateHR(_ value: Double, at timestamp: Date = Date()) {
         eventDetector.updateHR(value, at: timestamp)
     }
 
-    /// Update SpO2 metric (call continuously during recording)
-    /// - Parameters:
-    ///   - value: SpO2 percentage
-    ///   - timestamp: When the measurement was taken
+    /// Update SpO2 for validation
     public func updateSpO2(_ value: Double, at timestamp: Date = Date()) {
         eventDetector.updateSpO2(value, at: timestamp)
     }
 
-    /// Update Sleep state (call continuously during recording)
-    /// - Parameters:
-    ///   - state: Current sleep state
-    ///   - timestamp: When the state was determined
+    /// Update sleep state for validation
     public func updateSleep(_ state: SleepState, at timestamp: Date = Date()) {
         eventDetector.updateSleep(state, at: timestamp)
     }
 
-    /// Update Temperature (call continuously during recording)
-    /// Values in range 32-38°C indicate device is on skin and are used for validation
-    /// - Parameters:
-    ///   - value: Temperature in Celsius
-    ///   - timestamp: When the measurement was taken
+    /// Update temperature for validation
     public func updateTemperature(_ value: Double, at timestamp: Date = Date()) {
         eventDetector.updateTemperature(value, at: timestamp)
     }
 
-    // MARK: - Export
+    // MARK: - Configuration
 
-    /// Export events to CSV string
-    /// - Parameter options: Export options controlling which columns are included
-    /// - Returns: CSV content as string
-    public func exportCSV(options: EventCSVExporter.ExportOptions) -> String {
-        EventCSVExporter.exportToCSV(events: events, options: options)
+    public var detectionMode: DetectionMode {
+        get { eventDetector.detectionMode }
+        set { eventDetector.detectionMode = newValue }
     }
 
-    /// Export events to a file
-    /// - Parameters:
-    ///   - options: Export options controlling which columns are included
-    ///   - filename: Optional custom filename
-    /// - Returns: URL of the exported file
-    /// - Throws: Error if file write fails
-    public func exportToFile(options: EventCSVExporter.ExportOptions, filename: String? = nil) throws -> URL {
-        try EventCSVExporter.exportToFile(events: events, options: options, filename: filename)
+    public var absoluteThreshold: Int {
+        get { eventDetector.absoluteThreshold }
+        set { eventDetector.absoluteThreshold = newValue }
     }
 
-    /// Export events to a temporary file suitable for sharing
-    /// - Parameters:
-    ///   - options: Export options controlling which columns are included
-    ///   - userIdentifier: Optional user identifier to include in filename
-    /// - Returns: URL of the exported file
-    /// - Throws: Error if file write fails
-    public func exportToTempFile(options: EventCSVExporter.ExportOptions, userIdentifier: String? = nil) throws -> URL {
-        try EventCSVExporter.exportToTempFile(events: events, options: options, userIdentifier: userIdentifier)
+    public var normalizedThresholdPercent: Double {
+        get { eventDetector.normalizedThresholdPercent }
+        set { eventDetector.normalizedThresholdPercent = newValue }
     }
 
-    /// Get export summary for current session
-    /// - Parameter options: Export options
-    /// - Returns: Export summary
-    public func getExportSummary(options: EventCSVExporter.ExportOptions) -> EventExportSummary {
-        EventCSVExporter.getExportSummary(events: events, options: options)
+    // MARK: - Results
+
+    /// Get all detected events
+    public var events: [MuscleActivityEvent] {
+        cachedEvents
+    }
+
+    /// Check if recording is active
+    public var isRecording: Bool {
+        sessionState == .recording
+    }
+
+    /// Get session summary
+    public var summary: SessionSummary {
+        SessionSummary(
+            startTime: recordingStartTime,
+            duration: recordingDuration,
+            samplesProcessed: samplesProcessed,
+            eventsDetected: eventCount,
+            eventsDiscarded: discardedEventCount,
+            estimatedMemoryBytes: estimatedMemoryBytes,
+            baseline: eventDetector.baseline
+        )
     }
 
     // MARK: - Statistics
 
     /// Total duration of all events in milliseconds
     public var totalEventDurationMs: Int {
-        events.reduce(0) { $0 + $1.durationMs }
+        cachedEvents.reduce(0) { $0 + $1.durationMs }
     }
 
     /// Average event duration in milliseconds
     public var averageEventDurationMs: Double {
-        guard !events.isEmpty else { return 0 }
-        return Double(totalEventDurationMs) / Double(events.count)
-    }
-
-    /// Average IR value across all events
-    public var averageIRValue: Double {
-        guard !events.isEmpty else { return 0 }
-        return events.reduce(0.0) { $0 + $1.averageIR } / Double(events.count)
+        guard !cachedEvents.isEmpty else { return 0 }
+        return Double(totalEventDurationMs) / Double(cachedEvents.count)
     }
 
     /// Count of Activity events
     public var activityEventCount: Int {
-        events.filter { $0.eventType == .activity }.count
+        cachedEvents.filter { $0.eventType == .activity }.count
     }
 
     /// Count of Rest events
     public var restEventCount: Int {
-        events.filter { $0.eventType == .rest }.count
+        cachedEvents.filter { $0.eventType == .rest }.count
     }
 
-    // MARK: - Clear
+    // MARK: - Export
 
-    /// Clear all events without stopping recording
-    public func clearEvents() {
-        events.removeAll()
-        discardedEvents.removeAll()
-        eventCount = 0
-        discardedCount = 0
-        samplesProcessed = 0
-        samplesDiscarded = 0
-        estimatedMemoryBytes = 0
-        lastEventTime = nil
-        eventDetector.reset()
+    /// Export events to CSV string
+    public func exportCSV(options: EventCSVExporter.ExportOptions = .all) -> String {
+        EventCSVExporter.exportToCSV(events: cachedEvents, options: options)
     }
 
-    // MARK: - Session Summary
+    /// Export events to file
+    public func exportToFile(options: EventCSVExporter.ExportOptions = .all, filename: String? = nil) throws -> URL {
+        try EventCSVExporter.exportToFile(events: cachedEvents, options: options, filename: filename)
+    }
 
-    /// Get session summary for display
-    public var summary: SessionSummary {
-        SessionSummary(
-            startTime: sessionStartTime,
-            duration: recordingDuration,
-            samplesProcessed: samplesProcessed,
-            samplesDiscarded: samplesDiscarded,
-            eventsDetected: eventCount,
-            eventsDiscarded: discardedCount,
-            estimatedMemoryBytes: estimatedMemoryBytes
-        )
+    /// Export events to temp file for sharing
+    public func exportToTempFile(options: EventCSVExporter.ExportOptions = .all, userIdentifier: String? = nil) throws -> URL {
+        try EventCSVExporter.exportToTempFile(events: cachedEvents, options: options, userIdentifier: userIdentifier)
+    }
+
+    /// Get export summary
+    public func getExportSummary(options: EventCSVExporter.ExportOptions = .all) -> EventExportSummary {
+        EventCSVExporter.getExportSummary(events: cachedEvents, options: options)
     }
 }
 
 // MARK: - Session Summary
 
 /// Summary of a recording session
-public struct SessionSummary {
+public struct SessionSummary: Sendable {
     public let startTime: Date?
     public let duration: TimeInterval
     public let samplesProcessed: Int
-    public let samplesDiscarded: Int
     public let eventsDetected: Int
     public let eventsDiscarded: Int
     public let estimatedMemoryBytes: Int
+    public let baseline: Double
 
     public var formattedDuration: String {
-        let hours = Int(duration) / 3600
-        let minutes = (Int(duration) % 3600) / 60
-        let seconds = Int(duration) % 60
+        let h = Int(duration) / 3600
+        let m = (Int(duration) % 3600) / 60
+        let s = Int(duration) % 60
 
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
-        } else {
-            return String(format: "%02d:%02d", minutes, seconds)
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
         }
-    }
-
-    public var memoryEfficiency: String {
-        guard samplesProcessed > 0 else { return "N/A" }
-        let continuousBytes = samplesProcessed * 100 // Approximate bytes per SensorData
-        let savings = 100.0 - (Double(estimatedMemoryBytes) / Double(continuousBytes) * 100.0)
-        return String(format: "%.1f%% reduction", savings)
+        return String(format: "%02d:%02d", m, s)
     }
 
     public var formattedMemory: String {
@@ -391,8 +384,14 @@ public struct SessionSummary {
             return "\(estimatedMemoryBytes) B"
         } else if estimatedMemoryBytes < 1024 * 1024 {
             return "\(estimatedMemoryBytes / 1024) KB"
-        } else {
-            return String(format: "%.1f MB", Double(estimatedMemoryBytes) / 1024.0 / 1024.0)
         }
+        return String(format: "%.1f MB", Double(estimatedMemoryBytes) / 1024.0 / 1024.0)
+    }
+
+    public var memoryEfficiency: String {
+        guard samplesProcessed > 0 else { return "N/A" }
+        let continuousBytes = samplesProcessed * 100
+        let savings = 100.0 - (Double(estimatedMemoryBytes) / Double(continuousBytes) * 100.0)
+        return String(format: "%.1f%% reduction", max(0, savings))
     }
 }
