@@ -31,6 +31,10 @@ public class EventDetector: ObservableObject {
     /// Normalized threshold as percentage (e.g., 40% above baseline)
     @Published public var normalizedThresholdPercent: Double = 40.0
 
+    /// Minimum event duration in milliseconds to filter heartbeat noise
+    /// Events shorter than this are discarded as transient threshold crossings
+    public var minimumEventDurationMs: Int = 200
+
     /// Validation window in seconds
     public let validationWindowSeconds: TimeInterval = 180  // 3 minutes
 
@@ -61,6 +65,15 @@ public class EventDetector: ObservableObject {
     private var eventStartTemperature: Double?
     private var eventCounter: Int = 0
     private var lastIRValue: Int = 0
+
+    // MARK: - Pending Crossing State (for minimum duration filter)
+
+    private var pendingCrossingTimestamp: Date?
+    private var pendingCrossingType: EventType?
+    private var pendingStartIR: Int?
+    private var pendingStartNormalized: Double?
+    private var pendingStartAccel: (x: Int, y: Int, z: Int)?
+    private var pendingStartTemperature: Double?
 
     // MARK: - Statistics
 
@@ -338,6 +351,14 @@ public class EventDetector: ObservableObject {
             return
         }
 
+        // Calculate duration and filter short events (heartbeat noise)
+        let durationMs = Int(timestamp.timeIntervalSince(startTimestamp) * 1000)
+        guard durationMs >= minimumEventDurationMs else {
+            // Event too short - discard as noise
+            resetEventState()
+            return
+        }
+
         eventCounter += 1
 
         // Calculate averages
@@ -406,6 +427,13 @@ public class EventDetector: ObservableObject {
         eventSampleCount = 0
         eventStartAccel = nil
         eventStartTemperature = nil
+        // Clear pending state
+        pendingCrossingTimestamp = nil
+        pendingCrossingType = nil
+        pendingStartIR = nil
+        pendingStartNormalized = nil
+        pendingStartAccel = nil
+        pendingStartTemperature = nil
     }
 
     // MARK: - Positioning Detection
@@ -469,6 +497,13 @@ public class EventDetector: ObservableObject {
         validEventCount = 0
         invalidEventCount = 0
         lastIRValue = 0
+        // Clear pending state
+        pendingCrossingTimestamp = nil
+        pendingCrossingType = nil
+        pendingStartIR = nil
+        pendingStartNormalized = nil
+        pendingStartAccel = nil
+        pendingStartTemperature = nil
 
         hrHistory.removeAll()
         spO2History.removeAll()
