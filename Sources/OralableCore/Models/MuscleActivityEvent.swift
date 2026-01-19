@@ -11,9 +11,10 @@
 //  - Activity: PPG IR above threshold (muscle contraction)
 //  - Rest: PPG IR below threshold (muscle relaxation)
 //
-//  Validation Coloring:
-//  - Valid events (biometric data present): Green
-//  - Invalid events (no biometric data in window): Black
+//  Positioning & Coloring:
+//  - Not positioned (no HR in 3min OR temp < 32°C): Black
+//  - Positioned + Rest (below threshold): Green
+//  - Positioned + Activity (above threshold): Red
 //
 
 import Foundation
@@ -139,29 +140,47 @@ public struct MuscleActivityEvent: Codable, Identifiable, Equatable, Sendable {
     // MARK: - Display Properties
 
     #if canImport(SwiftUI)
-    /// Color for chart display based on validation status
-    /// Uses ColorSystem for consistent styling across apps
-    /// - Valid events: Green
-    /// - Invalid events: Black
+    /// Color for chart display based on positioning and event type
+    /// - Not positioned (invalid): Black
+    /// - Positioned + Rest: Green
+    /// - Positioned + Activity: Red
     public var displayColor: Color {
-        let colors = DesignSystem.shared.colors
-        return isValid ? colors.eventValid : colors.eventInvalid
+        if !isValid {
+            // Not positioned - black
+            return .black
+        }
+
+        // Positioned - color by event type
+        switch eventType {
+        case .activity:
+            return .red
+        case .rest:
+            return .green
+        }
     }
 
     /// Color with opacity for chart display
     public var displayColorWithOpacity: Color {
-        let colors = DesignSystem.shared.colors
-        if isValid {
-            return colors.eventValid.opacity(colors.eventValidOpacity)
-        } else {
-            return colors.eventInvalid.opacity(colors.eventInvalidOpacity)
+        if !isValid {
+            // Not positioned - black with opacity
+            return .black.opacity(0.6)
+        }
+
+        // Positioned - color by event type
+        switch eventType {
+        case .activity:
+            return .red.opacity(0.8)
+        case .rest:
+            return .green.opacity(0.8)
         }
     }
 
     /// Opacity value for chart display
     public var displayOpacity: Double {
-        let colors = DesignSystem.shared.colors
-        return isValid ? colors.eventValidOpacity : colors.eventInvalidOpacity
+        if !isValid {
+            return 0.6  // Not positioned
+        }
+        return 0.8  // Positioned (both rest and activity)
     }
     #endif
 

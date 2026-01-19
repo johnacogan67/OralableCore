@@ -408,34 +408,34 @@ public class EventDetector: ObservableObject {
         eventStartTemperature = nil
     }
 
-    // MARK: - Validation Helpers
+    // MARK: - Positioning Detection
 
-    /// Validate event by checking for metrics within window of event
-    /// FIXED: Now checks from (eventStart - window) to eventEnd
-    /// This allows metrics received DURING the event to count for validation
-    private func hasValidMetricInWindow(eventStart: Date, eventEnd: Date) -> Bool {
-        let windowStart = eventStart.addingTimeInterval(-validationWindowSeconds)
+    /// Check if device is correctly positioned
+    /// Positioned = HR calculated in last 3 minutes AND temp > 32°C
+    public func isDevicePositioned(at timestamp: Date) -> Bool {
+        let windowStart = timestamp.addingTimeInterval(-validationWindowSeconds)
 
-        // Check for HR in window (from windowStart to eventEnd)
-        let hasHR = hrHistory.contains { $0.timestamp >= windowStart && $0.timestamp <= eventEnd }
-
-        // Check for SpO2 in window
-        let hasSpO2 = spO2History.contains { $0.timestamp >= windowStart && $0.timestamp <= eventEnd }
-
-        // Check for sleep state in window
-        let hasSleep = sleepHistory.contains { $0.timestamp >= windowStart && $0.timestamp <= eventEnd }
-
-        // Check for VALID temperature (32-38°C) in window
-        // Temperature history now stores ALL readings, so we filter for valid range here
-        let hasValidTemp = temperatureHistory.contains { entry in
-            entry.timestamp >= windowStart &&
-            entry.timestamp <= eventEnd &&
-            entry.value >= Self.validTemperatureMin &&
-            entry.value <= Self.validTemperatureMax
+        // Must have HR reading in window
+        let hasRecentHR = hrHistory.contains { entry in
+            entry.timestamp >= windowStart && entry.timestamp <= timestamp
         }
 
-        // Event is valid if ANY biometric is present
-        return hasHR || hasSpO2 || hasSleep || hasValidTemp
+        // Must have valid temperature (> 32°C) in window
+        let hasValidTemp = temperatureHistory.contains { entry in
+            entry.timestamp >= windowStart &&
+            entry.timestamp <= timestamp &&
+            entry.value >= Self.validTemperatureMin
+        }
+
+        return hasRecentHR && hasValidTemp
+    }
+
+    // MARK: - Validation Helpers
+
+    /// Validate event by checking device positioning
+    /// Device must have HR in last 3 min AND temp > 32°C
+    private func hasValidMetricInWindow(eventStart: Date, eventEnd: Date) -> Bool {
+        return isDevicePositioned(at: eventEnd)
     }
 
     private func getLatestHR(before timestamp: Date) -> Double? {
