@@ -31,9 +31,13 @@ public class EventDetector: ObservableObject {
     /// Normalized threshold as percentage (e.g., 40% above baseline)
     @Published public var normalizedThresholdPercent: Double = 40.0
 
+    /// Minimum time signal must stay in new state before committing event change (debounce)
+    /// This prevents heartbeat oscillations from creating excessive events
+    public var stateChangeDebounceMs: Int = 1000
+
     /// Minimum event duration in milliseconds to filter heartbeat noise
     /// Events shorter than this are discarded as transient threshold crossings
-    public var minimumEventDurationMs: Int = 200
+    public var minimumEventDurationMs: Int = 1000
 
     /// Validation window in seconds
     public let validationWindowSeconds: TimeInterval = 180  // 3 minutes
@@ -290,27 +294,73 @@ public class EventDetector: ObservableObject {
             return
         }
 
-        // Check for threshold crossing
-        let newEventType: EventType = aboveThreshold ? .activity : .rest
+        // Determine potential new state
+        let potentialState: EventType = aboveThreshold ? .activity : .rest
 
-        if newEventType != currentEventType {
-            // End current event
-            endEvent(irValue: irValue, normalizedValue: normalizedValue, timestamp: timestamp)
+        // Check if signal state matches current event state
+        if potentialState == currentEventType {
+            // Signal matches current state - reset any pending state change
+            pendingCrossingTimestamp = nil
+            pendingCrossingType = nil
+            pendingStartIR = nil
+            pendingStartNormalized = nil
+            pendingStartAccel = nil
+            pendingStartTemperature = nil
 
-            // Start new event
-            currentEventType = newEventType
-            startEvent(
-                eventType: newEventType,
-                irValue: irValue,
-                normalizedValue: normalizedValue,
-                timestamp: timestamp,
-                accelX: accelX,
-                accelY: accelY,
-                accelZ: accelZ,
-                temperature: temperature
-            )
-        } else {
             // Update running averages (sample not stored)
+            eventIRSum += Int64(irValue)
+            eventNormalizedSum += normalizedValue
+            eventSampleCount += 1
+            samplesDiscarded += 1
+        } else {
+            // Signal crossed threshold - potential state change
+            if pendingCrossingType == potentialState {
+                // Already tracking this potential state change
+                if let startTime = pendingCrossingTimestamp {
+                    let elapsedMs = Int(timestamp.timeIntervalSince(startTime) * 1000)
+                    if elapsedMs >= stateChangeDebounceMs {
+                        // State has been sustained for debounce period - commit the change
+                        endEvent(irValue: pendingStartIR ?? irValue,
+                                 normalizedValue: pendingStartNormalized ?? normalizedValue,
+                                 timestamp: startTime)
+
+                        currentEventType = potentialState
+                        startEvent(
+                            eventType: potentialState,
+                            irValue: pendingStartIR ?? irValue,
+                            normalizedValue: pendingStartNormalized ?? normalizedValue,
+                            timestamp: startTime,
+                            accelX: pendingStartAccel?.x ?? accelX,
+                            accelY: pendingStartAccel?.y ?? accelY,
+                            accelZ: pendingStartAccel?.z ?? accelZ,
+                            temperature: pendingStartTemperature ?? temperature
+                        )
+
+                        // Clear pending state
+                        pendingCrossingTimestamp = nil
+                        pendingCrossingType = nil
+                        pendingStartIR = nil
+                        pendingStartNormalized = nil
+                        pendingStartAccel = nil
+                        pendingStartTemperature = nil
+
+                        // Add samples from debounce period to new event
+                        // (approximation based on sample rate)
+                        let debounceSamples = Int(Double(stateChangeDebounceMs) / 20.0) // ~50Hz
+                        eventSampleCount += debounceSamples
+                    }
+                }
+            } else {
+                // New potential state change - start tracking
+                pendingCrossingTimestamp = timestamp
+                pendingCrossingType = potentialState
+                pendingStartIR = irValue
+                pendingStartNormalized = normalizedValue
+                pendingStartAccel = (accelX, accelY, accelZ)
+                pendingStartTemperature = temperature
+            }
+
+            // Continue updating running averages for current event
             eventIRSum += Int64(irValue)
             eventNormalizedSum += normalizedValue
             eventSampleCount += 1

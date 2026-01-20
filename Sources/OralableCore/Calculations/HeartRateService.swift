@@ -82,9 +82,19 @@ public actor HeartRateService {
     /// Peak amplitude threshold multiplier
     private let peakThreshold: Double
 
+    /// Maximum coefficient of variation for signal stability (0.3 = 30%)
+    /// During rest: CV typically < 0.1 (10%)
+    /// During muscle activity: CV > 1.0 (100%+)
+    private let maxCVForStableSignal: Double
+
     // MARK: - Internal Buffer
 
     private var buffer: [Double] = []
+
+    // MARK: - Signal Stability Tracking
+
+    /// Last calculated coefficient of variation
+    private var lastCV: Double = 0
 
     // MARK: - Initialization
 
@@ -96,13 +106,15 @@ public actor HeartRateService {
     ///   - maxBPM: Maximum valid BPM (default: 180)
     ///   - minPeaks: Minimum peaks for valid result (default: 4)
     ///   - peakThreshold: Peak detection threshold multiplier (default: 0.4)
+    ///   - maxCVForStableSignal: Maximum coefficient of variation for stable signal (default: 0.3 = 30%)
     public init(
         sampleRate: Double = 50.0,
         windowSeconds: Double = 5.0,
         minBPM: Double = 40.0,
         maxBPM: Double = 180.0,
         minPeaks: Int = 4,
-        peakThreshold: Double = 0.4
+        peakThreshold: Double = 0.4,
+        maxCVForStableSignal: Double = 0.3
     ) {
         self.sampleRate = sampleRate
         self.windowSize = Int(sampleRate * windowSeconds)
@@ -110,6 +122,7 @@ public actor HeartRateService {
         self.maxBPM = maxBPM
         self.minPeaksRequired = minPeaks
         self.peakThreshold = peakThreshold
+        self.maxCVForStableSignal = maxCVForStableSignal
 
         self.buffer.reserveCapacity(windowSize)
     }
@@ -133,6 +146,23 @@ public actor HeartRateService {
             return .empty
         }
 
+        // Stage 0: Signal stability check - skip HR calculation during muscle activity
+        // During muscle activity, PPG variance is extremely high (6700%+ vs normal 5-10%)
+        let signalCV = calculateCoefficientOfVariation(buffer)
+        lastCV = signalCV
+
+        if signalCV > maxCVForStableSignal {
+            // Signal too noisy (muscle activity detected) - skip HR calculation
+            // Return empty result to avoid wild HR fluctuations
+            return HRResult(
+                bpm: 0,
+                confidence: 0,
+                isWorn: true,  // Device may still be worn, just experiencing muscle artifact
+                peakCount: 0,
+                hrvMs: nil
+            )
+        }
+
         // Stage 1: Bandpass filter (0.5Hz - 4Hz)
         let filtered = applyBandpassFilter(buffer)
 
@@ -154,6 +184,32 @@ public actor HeartRateService {
         )
     }
 
+    /// Calculate coefficient of variation (standard deviation / mean)
+    /// Low CV (<0.1) = stable rest signal
+    /// High CV (>0.3) = noisy muscle activity signal
+    private func calculateCoefficientOfVariation(_ values: [Double]) -> Double {
+        guard values.count > 1 else { return 0 }
+
+        let mean = values.reduce(0, +) / Double(values.count)
+        guard mean > 0 else { return 0 }
+
+        let squaredDiffs = values.map { pow($0 - mean, 2) }
+        let variance = squaredDiffs.reduce(0, +) / Double(values.count)
+        let stdDev = sqrt(variance)
+
+        return stdDev / mean
+    }
+
+    /// Check if signal is currently stable enough for HR calculation
+    public var isSignalStable: Bool {
+        lastCV <= maxCVForStableSignal
+    }
+
+    /// Get the last calculated coefficient of variation
+    public var signalCV: Double {
+        lastCV
+    }
+
     /// Process a single sample (for real-time streaming)
     /// - Parameter sample: Single cleaned PPG sample
     /// - Returns: HRResult (may be empty if buffer not full)
@@ -164,6 +220,7 @@ public actor HeartRateService {
     /// Reset the buffer and internal state
     public func reset() {
         buffer.removeAll(keepingCapacity: true)
+        lastCV = 0
     }
 
     /// Get current buffer fill level (0.0 to 1.0)
