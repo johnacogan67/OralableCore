@@ -47,6 +47,12 @@ public class EventDetector: ObservableObject {
     public static let validTemperatureMin: Double = 32.0
     public static let validTemperatureMax: Double = 38.0
 
+    // MARK: - SpO2 Validation
+
+    /// Minimum SpO2 percentage for valid positioning (70% is very conservative)
+    /// SpO2 is more stable during muscle activity than HR due to ratio-of-ratios calculation
+    public static let validSpO2Min: Double = 70.0
+
     // MARK: - Calibration
 
     public let calibrationManager = PPGCalibrationManager()
@@ -489,13 +495,21 @@ public class EventDetector: ObservableObject {
     // MARK: - Positioning Detection
 
     /// Check if device is correctly positioned
-    /// Positioned = HR calculated in last 3 minutes AND temp > 32°C
+    /// Positioned = (HR OR SpO2) in last 3 minutes AND temp > 32°C
+    /// SpO2 is more stable during muscle activity due to ratio-of-ratios calculation
     public func isDevicePositioned(at timestamp: Date) -> Bool {
         let windowStart = timestamp.addingTimeInterval(-validationWindowSeconds)
 
-        // Must have HR reading in window
+        // Check for HR reading in window
         let hasRecentHR = hrHistory.contains { entry in
             entry.timestamp >= windowStart && entry.timestamp <= timestamp
+        }
+
+        // Check for valid SpO2 reading in window (more stable during muscle activity)
+        let hasRecentSpO2 = spO2History.contains { entry in
+            entry.timestamp >= windowStart &&
+            entry.timestamp <= timestamp &&
+            entry.value >= Self.validSpO2Min
         }
 
         // Must have valid temperature (> 32°C) in window
@@ -505,7 +519,8 @@ public class EventDetector: ObservableObject {
             entry.value >= Self.validTemperatureMin
         }
 
-        return hasRecentHR && hasValidTemp
+        // CHANGED: HR OR SpO2 (instead of just HR) for more robust validation
+        return (hasRecentHR || hasRecentSpO2) && hasValidTemp
     }
 
     // MARK: - Validation Helpers
