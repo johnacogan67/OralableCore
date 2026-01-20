@@ -289,6 +289,11 @@ public class EventRecordingSession: ObservableObject {
         eventDetector.updateTemperature(value, at: timestamp)
     }
 
+    /// Update perfusion index for validation
+    public func updatePerfusionIndex(_ value: Double, at timestamp: Date = Date()) {
+        eventDetector.updatePerfusionIndex(value, at: timestamp)
+    }
+
     // MARK: - Configuration
 
     /// Always returns .normalized

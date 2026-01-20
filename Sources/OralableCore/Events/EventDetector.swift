@@ -53,6 +53,12 @@ public class EventDetector: ObservableObject {
     /// SpO2 is more stable during muscle activity than HR due to ratio-of-ratios calculation
     public static let validSpO2Min: Double = 70.0
 
+    // MARK: - Perfusion Index Validation
+
+    /// Minimum perfusion index to indicate valid blood flow (0.1% = 0.001)
+    /// PI = AC/DC ratio, indicates pulsatile blood flow detected
+    public static let validPerfusionIndexMin: Double = 0.001
+
     // MARK: - Calibration
 
     public let calibrationManager = PPGCalibrationManager()
@@ -113,6 +119,7 @@ public class EventDetector: ObservableObject {
     private var spO2History: [(timestamp: Date, value: Double)] = []
     private var sleepHistory: [(timestamp: Date, state: SleepState)] = []
     private var temperatureHistory: [(timestamp: Date, value: Double)] = []
+    private var piHistory: [(timestamp: Date, value: Double)] = []  // Perfusion Index
 
     // MARK: - Callbacks
 
@@ -243,12 +250,21 @@ public class EventDetector: ObservableObject {
         pruneHistory()
     }
 
+    /// Update perfusion index for positioning validation
+    /// PI > 0.001 (0.1%) indicates pulsatile blood flow detected
+    public func updatePerfusionIndex(_ value: Double, at timestamp: Date = Date()) {
+        guard value > 0 else { return }
+        piHistory.append((timestamp, value))
+        pruneHistory()
+    }
+
     private func pruneHistory() {
         let cutoff = Date().addingTimeInterval(-validationWindowSeconds - 60)
         hrHistory.removeAll { $0.timestamp < cutoff }
         spO2History.removeAll { $0.timestamp < cutoff }
         sleepHistory.removeAll { $0.timestamp < cutoff }
         temperatureHistory.removeAll { $0.timestamp < cutoff }
+        piHistory.removeAll { $0.timestamp < cutoff }
     }
 
     // MARK: - Sample Processing
@@ -495,8 +511,11 @@ public class EventDetector: ObservableObject {
     // MARK: - Positioning Detection
 
     /// Check if device is correctly positioned
-    /// Positioned = (HR OR SpO2) in last 3 minutes AND temp > 32°C
-    /// SpO2 is more stable during muscle activity due to ratio-of-ratios calculation
+    /// Positioned = (HR OR SpO2 OR PI) in last 3 minutes AND temp > 32°C
+    /// All three metrics prove the device is getting valid optical readings:
+    /// - HR: Heartbeat peaks detected in PPG signal
+    /// - SpO2: Valid Red/IR absorption ratio
+    /// - PI: Pulsatile blood flow detected (AC/DC ratio)
     public func isDevicePositioned(at timestamp: Date) -> Bool {
         let windowStart = timestamp.addingTimeInterval(-validationWindowSeconds)
 
@@ -512,6 +531,13 @@ public class EventDetector: ObservableObject {
             entry.value >= Self.validSpO2Min
         }
 
+        // Check for valid Perfusion Index in window (PI > 0.1%)
+        let hasRecentPI = piHistory.contains { entry in
+            entry.timestamp >= windowStart &&
+            entry.timestamp <= timestamp &&
+            entry.value >= Self.validPerfusionIndexMin
+        }
+
         // Must have valid temperature (> 32°C) in window
         let hasValidTemp = temperatureHistory.contains { entry in
             entry.timestamp >= windowStart &&
@@ -519,8 +545,9 @@ public class EventDetector: ObservableObject {
             entry.value >= Self.validTemperatureMin
         }
 
-        // CHANGED: HR OR SpO2 (instead of just HR) for more robust validation
-        return (hasRecentHR || hasRecentSpO2) && hasValidTemp
+        // Device is positioned if we have ANY optical proof AND valid temperature
+        let hasOpticalProof = hasRecentHR || hasRecentSpO2 || hasRecentPI
+        return hasOpticalProof && hasValidTemp
     }
 
     // MARK: - Validation Helpers
@@ -574,6 +601,7 @@ public class EventDetector: ObservableObject {
         spO2History.removeAll()
         sleepHistory.removeAll()
         temperatureHistory.removeAll()
+        piHistory.removeAll()
     }
 
     /// Full reset including calibration
