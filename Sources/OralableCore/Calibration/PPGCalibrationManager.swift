@@ -152,6 +152,13 @@ public class PPGCalibrationManager: ObservableObject {
 
         calibrationSamples.append(irValue)
 
+        // Log accepted samples periodically to verify correct channel
+        if calibrationSamples.count % 100 == 0 {
+            let minSample = calibrationSamples.min() ?? 0
+            let maxSample = calibrationSamples.max() ?? 0
+            Logger.shared.info("[PPGCalibrationManager] Accepted #\(calibrationSamples.count): \(irValue), range: \(minSample)-\(maxSample)")
+        }
+
         // Update progress
         if let startTime = calibrationStartTime {
             let elapsed = Date().timeIntervalSince(startTime)

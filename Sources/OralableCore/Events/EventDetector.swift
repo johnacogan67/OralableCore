@@ -358,6 +358,9 @@ public class EventDetector: ObservableObject {
                             temperature: pendingStartTemperature ?? temperature
                         )
 
+                        // Log state change
+                        Logger.shared.info("[EventDetector] State change: \(currentEventType?.rawValue ?? "nil") → \(potentialState.rawValue), norm=\(String(format: "%.1f", pendingStartNormalized ?? normalizedValue))%")
+
                         // Clear pending state
                         pendingCrossingTimestamp = nil
                         pendingCrossingType = nil
@@ -387,6 +390,12 @@ public class EventDetector: ObservableObject {
             eventNormalizedSum += normalizedValue
             eventSampleCount += 1
             samplesDiscarded += 1
+        }
+
+        // Log status periodically
+        if totalSamplesProcessed % 500 == 0 {
+            let norm = calibrationManager.normalize(irValue) ?? 0
+            Logger.shared.info("[EventDetector] Sample #\(totalSamplesProcessed): IR=\(irValue), norm=\(String(format: "%.1f", norm))%, state=\(currentEventType?.rawValue ?? "nil"), events=\(eventCounter)")
         }
 
         onSampleProcessed?()
