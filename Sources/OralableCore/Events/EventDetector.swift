@@ -520,7 +520,7 @@ public class EventDetector: ObservableObject {
     // MARK: - Positioning Detection
 
     /// Check if device is correctly positioned
-    /// Positioned = (HR OR SpO2 OR PI) in last 3 minutes AND temp > 32°C
+    /// Positioned = (HR OR SpO2 OR PI) in last 3 minutes
     /// All three metrics prove the device is getting valid optical readings:
     /// - HR: Heartbeat peaks detected in PPG signal
     /// - SpO2: Valid Red/IR absorption ratio
@@ -547,22 +547,16 @@ public class EventDetector: ObservableObject {
             entry.value >= Self.validPerfusionIndexMin
         }
 
-        // Must have valid temperature (> 32°C) in window
-        let hasValidTemp = temperatureHistory.contains { entry in
-            entry.timestamp >= windowStart &&
-            entry.timestamp <= timestamp &&
-            entry.value >= Self.validTemperatureMin
-        }
-
-        // Device is positioned if we have ANY optical proof AND valid temperature
+        // Device is positioned if we have ANY optical proof
+        // Temperature removed as positioning indicator - optical metrics are sufficient
         let hasOpticalProof = hasRecentHR || hasRecentSpO2 || hasRecentPI
-        return hasOpticalProof && hasValidTemp
+        return hasOpticalProof
     }
 
     // MARK: - Validation Helpers
 
     /// Validate event by checking device positioning
-    /// Device must have HR in last 3 min AND temp > 32°C
+    /// Device must have optical proof (HR, SpO2, or PI) in last 3 minutes
     private func hasValidMetricInWindow(eventStart: Date, eventEnd: Date) -> Bool {
         return isDevicePositioned(at: eventEnd)
     }
