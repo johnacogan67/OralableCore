@@ -4,6 +4,7 @@
 //
 //  Created: January 8, 2026
 //  Updated: January 15, 2026 - Added validation-based coloring (valid=green, invalid=black)
+//  DEPRECATED: January 29, 2026 - Use StateTransitionEvent instead for state-based recording
 //
 //  Represents a single muscle activity event detected by threshold crossing.
 //
@@ -15,6 +16,10 @@
 //  - Not positioned (no HR in 3min OR temp < 32°C): Black
 //  - Positioned + Rest (below threshold): Green
 //  - Positioned + Activity (above threshold): Red
+//
+//  NOTE: This event model is deprecated. The new state-based recording system
+//  uses StateTransitionEvent which records state transitions (DataStreaming,
+//  Positioned, Activity) rather than continuous activity/rest events.
 //
 
 import Foundation

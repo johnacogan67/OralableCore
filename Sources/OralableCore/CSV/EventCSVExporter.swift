@@ -4,9 +4,13 @@
 //
 //  Created: January 8, 2026
 //  Updated: January 13, 2026 - Added normalized value columns
+//  DEPRECATED: January 29, 2026 - Use StateEventCSVExporter instead
 //
 //  Exports muscle activity events to CSV format.
 //  Supports both raw IR values and normalized percentages.
+//
+//  NOTE: This exporter is deprecated. The new state-based recording system
+//  uses StateEventCSVExporter for exporting StateTransitionEvent data.
 //
 
 import Foundation

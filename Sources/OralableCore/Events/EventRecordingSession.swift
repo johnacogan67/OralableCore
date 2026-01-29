@@ -4,6 +4,7 @@
 //
 //  Created: January 8, 2026
 //  Updated: January 15, 2026 - Normalized-only detection, store all events
+//  DEPRECATED: January 29, 2026 - Use AutomaticRecordingSession instead
 //
 //  Manages a recording session with real-time event detection.
 //
@@ -12,6 +13,10 @@
 //  - Real-time event caching (ALL events, valid and invalid)
 //  - Memory-efficient (only stores events)
 //  - Session statistics with valid/invalid breakdown
+//
+//  NOTE: This session class is deprecated. The new automatic recording system
+//  uses AutomaticRecordingSession which starts automatically on BLE connect
+//  and uses state-based events rather than continuous threshold detection.
 //
 
 import Foundation

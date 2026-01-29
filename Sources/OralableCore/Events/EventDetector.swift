@@ -4,6 +4,7 @@
 //
 //  Created: January 8, 2026
 //  Updated: January 15, 2026 - Normalized-only detection, keep all events
+//  DEPRECATED: January 29, 2026 - Use StateTransitionDetector instead
 //
 //  Real-time event detector for muscle activity monitoring.
 //
@@ -18,6 +19,10 @@
 //  - Only stores completed events
 //  - Uses running averages instead of sample arrays
 //  - ~99.9% memory reduction vs storing all samples
+//
+//  NOTE: This detector is deprecated. The new state-based recording system
+//  uses StateTransitionDetector which detects state transitions rather than
+//  continuous threshold crossings.
 //
 
 import Foundation
