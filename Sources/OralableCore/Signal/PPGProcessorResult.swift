@@ -208,7 +208,7 @@ public class PPGProcessor {
         peakIndices = peaks
         
         guard peaks.count >= 2 else {
-            return PPGProcessorResult(peakCount: peaks.count, quality: 0.2)
+            return PPGProcessorResult(quality: 0.2, peakCount: peaks.count)
         }
         
         // Calculate inter-beat intervals
@@ -227,7 +227,7 @@ public class PPGProcessor {
         }
         
         guard !rrIntervals.isEmpty else {
-            return PPGProcessorResult(peakCount: peaks.count, quality: 0.3)
+            return PPGProcessorResult(quality: 0.3, peakCount: peaks.count)
         }
         
         // Use median interval (robust to outliers)
@@ -239,8 +239,8 @@ public class PPGProcessor {
         // Validate BPM range
         guard bpm >= Int(AlgorithmSpec.minHeartRate) && bpm <= Int(AlgorithmSpec.maxHeartRate) else {
             return PPGProcessorResult(
-                peakCount: peaks.count,
                 quality: 0.4,
+                peakCount: peaks.count,
                 rrIntervals: rrIntervals
             )
         }
