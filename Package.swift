@@ -29,7 +29,8 @@ let package = Package(
         .testTarget(
             name: "OralableCoreTests",
             dependencies: ["OralableCore"],
-            path: "Tests/OralableCoreTests"
+            path: "Tests/OralableCoreTests",
+            resources: [.process("Resources")]
         ),
     ]
 )

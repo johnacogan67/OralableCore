@@ -85,7 +85,8 @@ public class IRDCProcessor {
     // MARK: - Filter
     
     /// Lowpass filter for DC extraction (<0.8 Hz)
-    private let lowpassFilter: ButterworthFilter
+    /// Uses TransferFunctionFilter with scipy parity coefficients
+    private let lowpassFilter: TransferFunctionFilter
     
     // MARK: - Buffers
     
@@ -132,8 +133,8 @@ public class IRDCProcessor {
         self.rollingWindowSamples = Int(AlgorithmSpec.irDCRollingWindowSeconds * sampleRate)
         self.referenceWindowSamples = Int(AlgorithmSpec.irDCReferenceWindowSeconds * sampleRate)
         
-        // Create lowpass filter for DC extraction
-        self.lowpassFilter = ButterworthFilter.irDCLowpass(sampleRate: sampleRate)
+        // Create lowpass filter for DC extraction (scipy parity: 0.8 Hz, order 4)
+        self.lowpassFilter = TransferFunctionFilter.irDCLowpass()
     }
     
     // MARK: - Processing

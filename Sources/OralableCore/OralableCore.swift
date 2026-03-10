@@ -10,17 +10,23 @@
 import Foundation
 
 /// OralableCore package version information
-/// Note: Named CoreVersion (not OralableCore) to avoid shadowing the module name
-public enum CoreVersion {
+public enum OralableCore {
     /// Current version of the OralableCore package
     public static let version = "1.0.0"
 
-    /// Build date
-    public static let buildDate = "2025-12-30"
+    /// Build date (ISO 8601)
+    public static let buildDate: String = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
+    }()
 }
 
 // MARK: - Legacy Compatibility
 
 /// Legacy alias for backwards compatibility
-/// @available(*, deprecated, renamed: "CoreVersion")
-public typealias OralableCoreVersion = CoreVersion
+public typealias CoreVersion = OralableCore
+
+/// Legacy alias for backwards compatibility
+/// @available(*, deprecated, renamed: "OralableCore")
+public typealias OralableCoreVersion = OralableCore

@@ -420,6 +420,80 @@ public struct BLEDataParser: Sendable {
         return level
     }
 
+    // MARK: - Convenience / Legacy Parsing
+
+    /// Parse single PPG sample from 12-byte payload
+    public static func parseSinglePPG(_ data: Data) -> PPGData? {
+        return parsePPGSamples(data)?.first
+    }
+
+    /// Parse single accelerometer sample from 6-byte payload
+    public static func parseSingleAccelerometer(_ data: Data) -> AccelerometerData? {
+        return parseAccelerometerSamples(data)?.first
+    }
+
+    /// Parse temperature from various formats (legacy compatibility)
+    /// Supports: 6-byte TGM packet (4 frame + 2 centidegrees), 4-byte Float, 2-byte Int16 tenths
+    /// - Returns: Temperature in Celsius, or nil if invalid
+    public static func parseTemperatureData(_ data: Data) -> Double? {
+        if data.count >= 6, let result = parseTemperaturePacket(data) {
+            return result.temperatureCelsius
+        }
+        if data.count >= 4 {
+            let temp = data.withUnsafeBytes { ptr in ptr.load(as: Float.self) }
+            let celsius = Double(temp)
+            guard celsius >= 20.0 && celsius <= 50.0 else { return nil }
+            return celsius
+        }
+        if data.count >= 2 {
+            let tenths = data.withUnsafeBytes { ptr in ptr.load(as: Int16.self) }
+            let celsius = Double(tenths) / 10.0
+            guard celsius >= 20.0 && celsius <= 50.0 else { return nil }
+            return celsius
+        }
+        return nil
+    }
+
+    // MARK: - ANR Device Parsing
+
+    /// Parse EMG value normalized to 0.0–1.0 (ANR device, 0–1023 range)
+    public static func parseEMGData(_ data: Data) -> Double? {
+        guard data.count >= 2 else { return nil }
+        let raw = data.withUnsafeBytes { ptr in ptr.load(as: UInt16.self) }
+        guard raw <= 1023 else { return nil }
+        return Double(raw) / 1023.0
+    }
+
+    /// Parse raw EMG value (ANR device)
+    public static func parseEMGRaw(_ data: Data) -> Int? {
+        guard data.count >= 2 else { return nil }
+        let raw = Int(data.withUnsafeBytes { ptr in ptr.load(as: UInt16.self) })
+        guard raw >= 0 && raw <= 1023 else { return nil }
+        return raw
+    }
+
+    /// Parse combined PPG + accelerometer (18 bytes: 12 PPG + 6 accel)
+    public static func parseCombinedSensorData(_ data: Data) -> (PPGData, AccelerometerData)? {
+        guard data.count >= 18 else { return nil }
+        let ppgData = Data(data.prefix(12))
+        let accelData = Data(data.dropFirst(12).prefix(6))
+        guard let ppgSamples = parsePPGSamples(ppgData),
+              let ppg = ppgSamples.first,
+              let accelSamples = parseAccelerometerSamples(accelData),
+              let accel = accelSamples.first else {
+            return nil
+        }
+        return (ppg, accel)
+    }
+
+    /// Parse ANR device ID (1 byte, valid range 1–24)
+    public static func parseANRDeviceID(_ data: Data) -> Int? {
+        guard data.count >= 1 else { return nil }
+        let id = Int(data[0])
+        guard id >= 1 && id <= 24 else { return nil }
+        return id
+    }
+
     // MARK: - Device Information Parsing
 
     /// Parse device information string from raw BLE data
@@ -481,6 +555,28 @@ extension BLEDataParser {
         }
 
         return .invalidData(reason: "Failed to parse PPG packet structure")
+    }
+
+    /// Parse PPG samples (no frame counter) with detailed error information
+    public static func parsePPGDataValidated(_ data: Data, notificationTime: Date = Date()) -> BLEParseResult<[PPGData]> {
+        if data.count < bytesPerPPGSample {
+            return .insufficientData(expected: bytesPerPPGSample, actual: data.count)
+        }
+        if let samples = parsePPGSamples(data, notificationTime: notificationTime) {
+            return .success(samples)
+        }
+        return .invalidData(reason: "Failed to parse PPG samples")
+    }
+
+    /// Parse accelerometer samples (no frame counter) with detailed error information
+    public static func parseAccelerometerDataValidated(_ data: Data, notificationTime: Date = Date()) -> BLEParseResult<[AccelerometerData]> {
+        if data.count < bytesPerAccelSample {
+            return .insufficientData(expected: bytesPerAccelSample, actual: data.count)
+        }
+        if let samples = parseAccelerometerSamples(data, notificationTime: notificationTime) {
+            return .success(samples)
+        }
+        return .invalidData(reason: "Failed to parse accelerometer samples")
     }
 
     /// Parse accelerometer packet with detailed error information

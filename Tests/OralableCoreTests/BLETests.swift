@@ -341,7 +341,7 @@ final class BLEDataParserTests: XCTestCase {
         let reading = BLEDataParser.parseTemperatureData(data)
 
         XCTAssertNotNil(reading)
-        XCTAssertEqual(reading?.celsius ?? 0, 36.5, accuracy: 0.1)
+        XCTAssertEqual(reading ?? 0, 36.5, accuracy: 0.1)
     }
 
     func testParseTemperatureDataInt16() {
@@ -353,7 +353,7 @@ final class BLEDataParserTests: XCTestCase {
         let reading = BLEDataParser.parseTemperatureData(data)
 
         XCTAssertNotNil(reading)
-        XCTAssertEqual(reading?.celsius ?? 0, 36.5, accuracy: 0.1)
+        XCTAssertEqual(reading ?? 0, 36.5, accuracy: 0.1)
     }
 
     func testParseTemperatureDataOutOfRange() {
@@ -434,17 +434,17 @@ final class BLEDataParserTests: XCTestCase {
         let reading = BLEDataParser.parseStandardBatteryLevel(data)
 
         XCTAssertNotNil(reading)
-        XCTAssertEqual(reading?.percentage, 85)
+        XCTAssertEqual(reading, 85)
     }
 
     func testParseStandardBatteryLevelBoundary() {
         let zeroData = Data([0])
         let zeroReading = BLEDataParser.parseStandardBatteryLevel(zeroData)
-        XCTAssertEqual(zeroReading?.percentage, 0)
+        XCTAssertEqual(zeroReading, 0)
 
         let fullData = Data([100])
         let fullReading = BLEDataParser.parseStandardBatteryLevel(fullData)
-        XCTAssertEqual(fullReading?.percentage, 100)
+        XCTAssertEqual(fullReading, 100)
     }
 
     // MARK: - EMG Data Parsing
@@ -603,7 +603,7 @@ final class BLEDataParserTests: XCTestCase {
 
         XCTAssertTrue(result.isSuccess)
         XCTAssertNotNil(result.value)
-        XCTAssertEqual(result.value?.count, 1)
+        XCTAssertEqual(result.value?.count ?? 0, 1)
     }
 
     func testParsePPGDataValidatedInsufficientData() {

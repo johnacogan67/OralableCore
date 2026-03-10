@@ -79,7 +79,8 @@ public class PPGProcessor {
     // MARK: - Filters
     
     /// Bandpass filter for heart rate extraction (0.5-8 Hz)
-    private let bandpassFilter: ButterworthFilter
+    /// Uses TransferFunctionFilter with scipy parity coefficients
+    private let bandpassFilter: TransferFunctionFilter
     
     // MARK: - Buffers
     
@@ -113,8 +114,8 @@ public class PPGProcessor {
         self.minSamplesRequired = Int(sampleRate * AlgorithmSpec.minSignalBufferSeconds)
         self.minPeakDistanceSamples = Int(AlgorithmSpec.minPeakDistanceSeconds * sampleRate)
         
-        // Create bandpass filter for HR detection
-        self.bandpassFilter = ButterworthFilter.hrBandpass(sampleRate: sampleRate)
+        // Create bandpass filter for HR detection (scipy parity: 0.5-8 Hz, order 4)
+        self.bandpassFilter = TransferFunctionFilter.hrBandpass()
     }
     
     // MARK: - Processing
