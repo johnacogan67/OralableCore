@@ -2,32 +2,29 @@
 //  MAMInferenceManager.swift
 //  OralableCore
 //
-//  Created: March 2026
-//  Purpose: CoreML inference pipeline for MAM Net research model.
-//  Implements sliding window logic and tensor-formatting bridge for bruxism classification.
-//
-//  Input: PPG-Red (AC), PPG-IR (DC), Accelerometer (Magnitude) @ 50 Hz
-//  Window: 250 samples (5 seconds)
-//  Stride: 50 samples (1 second) — classifier invoked every 50 new samples
+//  Temporalis MAM: CoreML inference for 1 s windows (50 × 6 tensor @ 50 Hz).
+//  States: Quiet, Phasic, Tonic, Rescue (replaces legacy Masseter-only naming in UI elsewhere).
 //
 
 import Foundation
 import CoreML
 
-// MARK: - Bruxism State
+// MARK: - Temporalis State
 
-/// Sleep bruxism classification states from MAM Net
-public enum BruxismState: String, Sendable, CaseIterable {
-    case quiet   // No clenching/grinding
-    case phasic  // Rhythmic grinding
-    case tonic   // Sustained clenching
-    case rescue  // Rescue/artifact
+/// Four-class Temporalis / sleep-bruxism state from the research model
+public enum TemporalisState: String, Sendable, CaseIterable {
+    case quiet
+    case phasic
+    case tonic
+    case rescue
 }
 
-// MARK: - Bruxism Probabilities
+/// Deprecated alias — use `TemporalisState`
+public typealias BruxismState = TemporalisState
 
-/// Raw probability scores for each bruxism state (sum to ~1.0)
-public struct BruxismProbabilities: Sendable {
+// MARK: - Class Probabilities
+
+public struct TemporalisProbabilities: Sendable {
     public let quiet: Double
     public let phasic: Double
     public let tonic: Double
@@ -40,8 +37,7 @@ public struct BruxismProbabilities: Sendable {
         self.rescue = rescue
     }
 
-    /// Most likely state
-    public var dominantState: BruxismState {
+    public var dominantState: TemporalisState {
         let maxVal = max(quiet, phasic, tonic, rescue)
         if quiet == maxVal { return .quiet }
         if phasic == maxVal { return .phasic }
@@ -50,52 +46,52 @@ public struct BruxismProbabilities: Sendable {
     }
 }
 
-// MARK: - Bruxism Classifier Protocol
+public typealias BruxismProbabilities = TemporalisProbabilities
 
-/// Protocol for bruxism classification models (MAM Net, mock, or future CoreML)
-public protocol BruxismClassifier: Sendable {
-    /// Classify bruxism state from preformatted tensor
-    /// - Parameter input: MLMultiArray of shape [1, 250, 3] (batch, time, channels)
-    /// - Returns: Classified BruxismState
-    func classify(input: MLMultiArray) async -> BruxismState
+// MARK: - Classifier Protocol
 
-    /// Return raw probabilities for each state (Quiet, Phasic, Tonic, Rescue)
-    /// - Parameter input: MLMultiArray of shape [1, 250, 3]
-    /// - Returns: BruxismProbabilities summing to ~1.0
-    func probabilities(input: MLMultiArray) async -> BruxismProbabilities?
+public protocol TemporalisClassifier: Sendable {
+    /// - Parameter input: MLMultiArray of shape [1, 50, 6] (batch, time, channels)
+    func classify(input: MLMultiArray) async -> TemporalisState
+
+    /// - Parameter input: MLMultiArray of shape [1, 50, 6]
+    func probabilities(input: MLMultiArray) async -> TemporalisProbabilities?
 }
 
-// MARK: - Mock MAM Classifier
+public typealias BruxismClassifier = TemporalisClassifier
 
-/// Stub classifier for development and testing. Returns random BruxismState.
-public final class MockMAMClassifier: BruxismClassifier, @unchecked Sendable {
+// MARK: - Mock Classifier
+
+public final class MockTemporalisClassifier: TemporalisClassifier, @unchecked Sendable {
     public init() {}
 
-    public func classify(input: MLMultiArray) async -> BruxismState {
+    public func classify(input: MLMultiArray) async -> TemporalisState {
         await Task.detached(priority: .utility) {
-            BruxismState.allCases.randomElement() ?? .quiet
+            TemporalisState.allCases.randomElement() ?? .quiet
         }.value
     }
 
-    public func probabilities(input: MLMultiArray) async -> BruxismProbabilities? {
+    public func probabilities(input: MLMultiArray) async -> TemporalisProbabilities? {
         let q = Double.random(in: 0.2...0.3)
         let p = Double.random(in: 0.2...0.3)
         let t = Double.random(in: 0.2...0.3)
         let r = 1.0 - q - p - t
-        return BruxismProbabilities(quiet: q, phasic: p, tonic: t, rescue: max(0, r))
+        return TemporalisProbabilities(quiet: q, phasic: p, tonic: t, rescue: max(0, r))
     }
 }
 
-// MARK: - CoreML MAM Classifier
+public typealias MockMAMClassifier = MockTemporalisClassifier
 
-/// CoreML-backed BruxismMAM model. Returns probabilities for Quiet, Phasic, Tonic, Rescue.
-public final class CoreMLMAMClassifier: BruxismClassifier, @unchecked Sendable {
+// MARK: - Core ML Classifier
+
+/// CoreML `BruxismMAM_Temporalis` — input [1, 50, 6], output softmax `probabilities` (1×4).
+public final class CoreMLTemporalisClassifier: TemporalisClassifier, @unchecked Sendable {
     private let model: MLModel?
 
     public init() {
         do {
-            guard let url = Bundle.module.url(forResource: "BruxismMAM", withExtension: "mlpackage") else {
-                Logger.shared.warning("[MAM] BruxismMAM.mlpackage not found in bundle")
+            guard let url = Bundle.module.url(forResource: "BruxismMAM_Temporalis", withExtension: "mlpackage") else {
+                Logger.shared.warning("[Temporalis] BruxismMAM_Temporalis.mlpackage not found in bundle")
                 self.model = nil
                 return
             }
@@ -103,19 +99,19 @@ public final class CoreMLMAMClassifier: BruxismClassifier, @unchecked Sendable {
             config.computeUnits = .cpuAndNeuralEngine
             self.model = try MLModel(contentsOf: url, configuration: config)
         } catch {
-            Logger.shared.warning("[MAM] Failed to load BruxismMAM model: \(error); using mock")
+            Logger.shared.warning("[Temporalis] Failed to load model: \(error)")
             self.model = nil
         }
     }
 
-    public func classify(input: MLMultiArray) async -> BruxismState {
+    public func classify(input: MLMultiArray) async -> TemporalisState {
         if let probs = await probabilities(input: input) {
             return probs.dominantState
         }
         return .quiet
     }
 
-    public func probabilities(input: MLMultiArray) async -> BruxismProbabilities? {
+    public func probabilities(input: MLMultiArray) async -> TemporalisProbabilities? {
         guard let model = model else { return nil }
         return await Task.detached(priority: .userInitiated) {
             do {
@@ -124,23 +120,23 @@ public final class CoreMLMAMClassifier: BruxismClassifier, @unchecked Sendable {
                 guard let probArray = output.featureValue(for: "probabilities")?.multiArrayValue else {
                     return nil
                 }
-                // Shape (1, 4) — [quiet, phasic, tonic, rescue]
                 let quiet = probArray[[0, 0] as [NSNumber]].doubleValue
                 let phasic = probArray[[0, 1] as [NSNumber]].doubleValue
                 let tonic = probArray[[0, 2] as [NSNumber]].doubleValue
                 let rescue = probArray[[0, 3] as [NSNumber]].doubleValue
-                return BruxismProbabilities(quiet: quiet, phasic: phasic, tonic: tonic, rescue: rescue)
+                return TemporalisProbabilities(quiet: quiet, phasic: phasic, tonic: tonic, rescue: rescue)
             } catch {
-                Logger.shared.warning("[MAM] CoreML prediction failed: \(error)")
+                Logger.shared.warning("[Temporalis] CoreML prediction failed: \(error)")
                 return nil
             }
         }.value
     }
 }
 
+public typealias CoreMLMAMClassifier = CoreMLTemporalisClassifier
+
 // MARK: - Clinical Log Manager
 
-/// Appends raw MAM probabilities to mam_clinical_audit.csv in the app Documents directory.
 public final class ClinicalLogManager: @unchecked Sendable {
     private let fileURL: URL
     private let queue: DispatchQueue
@@ -153,8 +149,7 @@ public final class ClinicalLogManager: @unchecked Sendable {
         self.queue = DispatchQueue(label: "com.oralable.clinical.log", qos: .utility)
     }
 
-    /// Append one row: timestamp, quiet, phasic, tonic, rescue
-    public func append(timestamp: Date, probabilities: BruxismProbabilities) {
+    public func append(timestamp: Date, probabilities: TemporalisProbabilities) {
         queue.async { [weak self] in
             guard let self = self else { return }
             let formatter = ISO8601DateFormatter()
@@ -181,149 +176,147 @@ public final class ClinicalLogManager: @unchecked Sendable {
 
 // MARK: - Classification Buffer
 
-/// Maintains the last 250 samples (5 seconds @ 50 Hz) for three channels:
-/// - PPG-Red (AC): Bandpass-filtered red for heart rate component
-/// - PPG-IR (DC): Low-pass IR for muscle occlusion / DC shift
-/// - Accelerometer (Magnitude): sqrt(x²+y²+z²) in g
+/// 1 s @ 50 Hz, six channels (Temporalis tensor layout):
+/// 0: Green AC (0.5–4 Hz), 1: IR DC (<1 Hz), 2: Red AC (0.5–4 Hz), 3–5: accel x,y,z (g).
 public struct ClassificationBuffer: Sendable {
-    private var ppgRedAC: [Double]
-    private var ppgIRDC: [Double]
-    private var accelMagnitude: [Double]
+    private var greenAC: [Double]
+    private var irDC: [Double]
+    private var redAC: [Double]
+    private var accelX: [Double]
+    private var accelY: [Double]
+    private var accelZ: [Double]
 
-    public static let windowSize: Int = 250
+    public static let windowSize: Int = 50
     public static let strideSize: Int = 50
 
     public init() {
-        self.ppgRedAC = []
-        self.ppgIRDC = []
-        self.accelMagnitude = []
+        self.greenAC = []
+        self.irDC = []
+        self.redAC = []
+        self.accelX = []
+        self.accelY = []
+        self.accelZ = []
     }
 
-    /// Append one sample for each channel
-    public mutating func append(ppgRedAC: Double, ppgIRDC: Double, accelMagnitude: Double) {
-        self.ppgRedAC.append(ppgRedAC)
-        self.ppgIRDC.append(ppgIRDC)
-        self.accelMagnitude.append(accelMagnitude)
+    public mutating func append(
+        greenAC: Double,
+        irDC: Double,
+        redAC: Double,
+        accelX: Double,
+        accelY: Double,
+        accelZ: Double
+    ) {
+        self.greenAC.append(greenAC)
+        self.irDC.append(irDC)
+        self.redAC.append(redAC)
+        self.accelX.append(accelX)
+        self.accelY.append(accelY)
+        self.accelZ.append(accelZ)
+        trim()
+    }
 
-        // Trim to window size (keep last 250)
-        if self.ppgRedAC.count > Self.windowSize {
-            self.ppgRedAC.removeFirst(self.ppgRedAC.count - Self.windowSize)
+    private mutating func trim() {
+        if greenAC.count > Self.windowSize {
+            greenAC.removeFirst(greenAC.count - Self.windowSize)
         }
-        if self.ppgIRDC.count > Self.windowSize {
-            self.ppgIRDC.removeFirst(self.ppgIRDC.count - Self.windowSize)
+        if irDC.count > Self.windowSize {
+            irDC.removeFirst(irDC.count - Self.windowSize)
         }
-        if self.accelMagnitude.count > Self.windowSize {
-            self.accelMagnitude.removeFirst(self.accelMagnitude.count - Self.windowSize)
+        if redAC.count > Self.windowSize {
+            redAC.removeFirst(redAC.count - Self.windowSize)
+        }
+        if accelX.count > Self.windowSize {
+            accelX.removeFirst(accelX.count - Self.windowSize)
+        }
+        if accelY.count > Self.windowSize {
+            accelY.removeFirst(accelY.count - Self.windowSize)
+        }
+        if accelZ.count > Self.windowSize {
+            accelZ.removeFirst(accelZ.count - Self.windowSize)
         }
     }
 
-    /// Number of samples (min of three channels)
     public var count: Int {
-        min(ppgRedAC.count, ppgIRDC.count, accelMagnitude.count)
+        min(greenAC.count, irDC.count, redAC.count, accelX.count, accelY.count, accelZ.count)
     }
 
-    /// Whether buffer has full window for inference
     public var isFull: Bool {
         count >= Self.windowSize
     }
 
-    /// Convert buffer to MLMultiArray of shape [1, 250, 3], Float32
-    /// Layout: [batch, time, channel] — channel 0: PPG-Red AC, 1: PPG-IR DC, 2: Accel Magnitude
     public func convertToMultiArray() -> MLMultiArray? {
         guard count >= Self.windowSize else { return nil }
-
-        let shape = [1, Self.windowSize, 3] as [NSNumber]
+        let shape = [1, Self.windowSize, 6] as [NSNumber]
         guard let array = try? MLMultiArray(shape: shape, dataType: .float32) else {
             return nil
         }
-
-        let redSlice = ppgRedAC.suffix(Self.windowSize)
-        let irSlice = ppgIRDC.suffix(Self.windowSize)
-        let accelSlice = accelMagnitude.suffix(Self.windowSize)
-
+        let g = greenAC.suffix(Self.windowSize)
+        let ir = irDC.suffix(Self.windowSize)
+        let r = redAC.suffix(Self.windowSize)
+        let ax = accelX.suffix(Self.windowSize)
+        let ay = accelY.suffix(Self.windowSize)
+        let az = accelZ.suffix(Self.windowSize)
         for t in 0..<Self.windowSize {
-            let redVal = Float(redSlice[redSlice.startIndex + t])
-            let irVal = Float(irSlice[irSlice.startIndex + t])
-            let accVal = Float(accelSlice[accelSlice.startIndex + t])
-
-            array[[0, t, 0] as [NSNumber]] = NSNumber(value: redVal)
-            array[[0, t, 1] as [NSNumber]] = NSNumber(value: irVal)
-            array[[0, t, 2] as [NSNumber]] = NSNumber(value: accVal)
+            array[[0, t, 0] as [NSNumber]] = NSNumber(value: Float(g[g.startIndex + t]))
+            array[[0, t, 1] as [NSNumber]] = NSNumber(value: Float(ir[ir.startIndex + t]))
+            array[[0, t, 2] as [NSNumber]] = NSNumber(value: Float(r[r.startIndex + t]))
+            array[[0, t, 3] as [NSNumber]] = NSNumber(value: Float(ax[ax.startIndex + t]))
+            array[[0, t, 4] as [NSNumber]] = NSNumber(value: Float(ay[ay.startIndex + t]))
+            array[[0, t, 5] as [NSNumber]] = NSNumber(value: Float(az[az.startIndex + t]))
         }
-
         return array
     }
 
-    /// Reset buffer (e.g. on session start)
     public mutating func reset() {
-        ppgRedAC.removeAll()
-        ppgIRDC.removeAll()
-        accelMagnitude.removeAll()
+        greenAC.removeAll()
+        irDC.removeAll()
+        redAC.removeAll()
+        accelX.removeAll()
+        accelY.removeAll()
+        accelZ.removeAll()
     }
 }
 
-// MARK: - MAM Inference Manager
+// MARK: - Inference Manager
 
-/// Raw accelerometer scale: 16384 LSB/g (LIS2DTW12 ±2g typical)
-private let kAccelScale: Double = 16384.0
-
-/// Manages the sliding window buffer and triggers classification every 50 new samples.
-/// Classification runs off the main thread to avoid blocking biometric ingestion.
 public final class MAMInferenceManager: @unchecked Sendable {
     private var buffer: ClassificationBuffer
-    private let classifier: any BruxismClassifier
+    private let classifier: any TemporalisClassifier
     private let clinicalLog: ClinicalLogManager?
     private let classificationQueue: DispatchQueue
     private var samplesSinceLastClassification: Int = 0
 
-    /// Callback invoked when classification completes (called on classification queue)
-    public var onClassificationResult: ((BruxismState) -> Void)?
+    public var onClassificationResult: ((TemporalisState) -> Void)?
+
+    /// Full class probabilities (softmax), emitted whenever Core ML returns a vector.
+    public var onTemporalisProbabilities: ((TemporalisProbabilities) -> Void)?
 
     public init(
-        classifier: any BruxismClassifier = CoreMLMAMClassifier(),
+        classifier: any TemporalisClassifier = CoreMLTemporalisClassifier(),
         clinicalLog: ClinicalLogManager? = ClinicalLogManager()
     ) {
         self.buffer = ClassificationBuffer()
         self.classifier = classifier
         self.clinicalLog = clinicalLog
-        self.classificationQueue = DispatchQueue(label: "com.oralable.mam.inference", qos: .utility)
+        self.classificationQueue = DispatchQueue(label: "com.oralable.temporalis.inference", qos: .utility)
     }
 
-    /// Add one sample. Computes accelerometer magnitude as √(x²+y²+z²) in g.
-    /// - Parameters:
-    ///   - ppgRedAC: Bandpass-filtered PPG red (AC component)
-    ///   - ppgIRDC: Low-pass PPG IR (DC component for occlusion)
-    ///   - accelX: Accelerometer X in g (or raw / 16384)
-    ///   - accelY: Accelerometer Y in g
-    ///   - accelZ: Accelerometer Z in g
     public func addSample(
-        ppgRedAC: Double,
-        ppgIRDC: Double,
+        greenAC: Double,
+        irDC: Double,
+        redAC: Double,
         accelX: Double,
         accelY: Double,
         accelZ: Double
     ) {
-        // 3rd channel: Accelerometer Magnitude √(x²+y²+z²)
-        let accelMagnitude = sqrt(accelX * accelX + accelY * accelY + accelZ * accelZ)
-        buffer.append(ppgRedAC: ppgRedAC, ppgIRDC: ppgIRDC, accelMagnitude: accelMagnitude)
-        samplesSinceLastClassification += 1
-
-        // Trigger classification every 50 new samples (1-second stride) once buffer is full
-        if buffer.isFull && samplesSinceLastClassification >= ClassificationBuffer.strideSize {
-            samplesSinceLastClassification = 0
-            if let input = buffer.convertToMultiArray() {
-                runClassificationAsync(input: input)
-            }
-        }
-    }
-
-    /// Feed one sample (legacy). Use addSample when raw accel x,y,z are available.
-    /// - Parameters:
-    ///   - ppgRedAC: Bandpass-filtered PPG red (AC component)
-    ///   - ppgIRDC: Low-pass PPG IR (DC component for occlusion)
-    ///   - accelMagnitude: Accelerometer magnitude in g (pre-computed)
-    public func feed(ppgRedAC: Double, ppgIRDC: Double, accelMagnitude: Double) {
-        buffer.append(ppgRedAC: ppgRedAC, ppgIRDC: ppgIRDC, accelMagnitude: accelMagnitude)
+        buffer.append(
+            greenAC: greenAC,
+            irDC: irDC,
+            redAC: redAC,
+            accelX: accelX,
+            accelY: accelY,
+            accelZ: accelZ
+        )
         samplesSinceLastClassification += 1
 
         if buffer.isFull && samplesSinceLastClassification >= ClassificationBuffer.strideSize {
@@ -334,16 +327,18 @@ public final class MAMInferenceManager: @unchecked Sendable {
         }
     }
 
-    /// Run classification on background queue; does not block caller
     private func runClassificationAsync(input: MLMultiArray) {
         classificationQueue.async { [weak self] in
             guard let self = self else { return }
             Task {
                 let probs = await self.classifier.probabilities(input: input)
                 if let probs = probs {
+                    self.onTemporalisProbabilities?(probs)
                     self.onClassificationResult?(probs.dominantState)
                     self.clinicalLog?.append(timestamp: Date(), probabilities: probs)
-                    Logger.shared.debug("[MAM Inference] quiet=\(String(format: "%.3f", probs.quiet)) phasic=\(String(format: "%.3f", probs.phasic)) tonic=\(String(format: "%.3f", probs.tonic)) rescue=\(String(format: "%.3f", probs.rescue))")
+                    Logger.shared.debug(
+                        "[Temporalis] quiet=\(String(format: "%.3f", probs.quiet)) phasic=\(String(format: "%.3f", probs.phasic)) tonic=\(String(format: "%.3f", probs.tonic)) rescue=\(String(format: "%.3f", probs.rescue))"
+                    )
                 } else {
                     let state = await self.classifier.classify(input: input)
                     self.onClassificationResult?(state)
@@ -352,7 +347,6 @@ public final class MAMInferenceManager: @unchecked Sendable {
         }
     }
 
-    /// Reset buffer and stride counter (e.g. on session start)
     public func reset() {
         buffer.reset()
         samplesSinceLastClassification = 0

@@ -11,10 +11,10 @@ import XCTest
 final class OralableCoreTests: XCTestCase {
 
     func testVersion() {
-        XCTAssertEqual(OralableCore.version, "1.0.0")
+        XCTAssertEqual(CoreVersion.version, "1.0.0")
     }
 
     func testBuildDate() {
-        XCTAssertFalse(OralableCore.buildDate.isEmpty)
+        XCTAssertFalse(CoreVersion.buildDate.isEmpty)
     }
 }

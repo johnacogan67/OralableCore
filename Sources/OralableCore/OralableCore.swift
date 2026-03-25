@@ -10,7 +10,8 @@
 import Foundation
 
 /// OralableCore package version information
-public enum OralableCore {
+/// Note: Named CoreVersion to avoid shadowing the OralableCore module name
+public enum CoreVersion {
     /// Current version of the OralableCore package
     public static let version = "1.0.0"
 
@@ -25,8 +26,4 @@ public enum OralableCore {
 // MARK: - Legacy Compatibility
 
 /// Legacy alias for backwards compatibility
-public typealias CoreVersion = OralableCore
-
-/// Legacy alias for backwards compatibility
-/// @available(*, deprecated, renamed: "OralableCore")
-public typealias OralableCoreVersion = OralableCore
+public typealias OralableCoreVersion = CoreVersion

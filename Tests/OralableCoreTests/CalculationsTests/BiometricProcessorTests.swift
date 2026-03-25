@@ -11,6 +11,12 @@ import XCTest
 
 final class BiometricProcessorTests: XCTestCase {
 
+    func testTemporalisFatigueIndexFormula() {
+        XCTAssertEqual(BiometricProcessor.temporalisFatigueIndex(driftCombined: 0), 50.0, accuracy: 1e-9)
+        let x = BiometricProcessor.temporalisFatigueIndex(driftCombined: 2.0)
+        XCTAssertEqual(x, 50.0 + 50.0 * Darwin.tanh(1.0), accuracy: 1e-9)
+    }
+
     // MARK: - Initialization Tests
 
     func testDefaultInitialization() async {

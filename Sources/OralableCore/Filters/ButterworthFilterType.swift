@@ -325,6 +325,17 @@ extension ButterworthFilter {
             order: AlgorithmSpec.filterOrder
         )
     }
+
+    /// Temporalis AC bandpass 0.5–4 Hz — for scipy‑exact coefficients use `TransferFunctionFilter.temporalisACBandpass()`.
+    public static func temporalisACBandpass(sampleRate: Double = AlgorithmSpec.ppgSampleRate) -> ButterworthFilter {
+        ButterworthFilter(
+            type: .bandpass,
+            cutoffLow: AlgorithmSpec.hrBandpassLow,
+            cutoffHigh: AlgorithmSpec.temporalisBandpassHigh,
+            sampleRate: sampleRate,
+            order: AlgorithmSpec.filterOrder
+        )
+    }
 }
 
 // MARK: - Sendable Conformance

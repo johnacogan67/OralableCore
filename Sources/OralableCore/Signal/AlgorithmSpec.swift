@@ -68,6 +68,9 @@ public enum AlgorithmSpec {
     
     /// Heart rate bandpass filter high cutoff (Hz)
     public static let hrBandpassHigh: Double = 8.0
+
+    /// Temporalis / MAM AC bandpass high cutoff (Hz) — matches `butter(4, [0.5/fs*2, 4/fs*2], 'band')` in research tooling
+    public static let temporalisBandpassHigh: Double = 4.0
     
     /// IR DC baseline lowpass cutoff (Hz)
     /// Python: _butter_lowpass(cutoff_hz=0.8, fs=50)

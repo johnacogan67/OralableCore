@@ -439,4 +439,12 @@ public actor BiometricProcessor {
 
         return (round(spo2 * 10) / 10, max(0, min(1.0, quality)))
     }
+
+    // MARK: - Temporalis Fatigue Index
+
+    /// Maps normalized drift `combined` from `calculate_tfi` in `features.py` to a squashed 0–100 score:
+    /// `50 + 50 * tanh(driftCombined / 2)`.
+    public nonisolated static func temporalisFatigueIndex(driftCombined: Double) -> Double {
+        50.0 + 50.0 * tanh(driftCombined / 2.0)
+    }
 }

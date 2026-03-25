@@ -2,100 +2,98 @@
 //  InferenceManagerTests.swift
 //  OralableCoreTests
 //
-//  Created: March 2026
-//  Validates MAMInferenceManager buffer logic and classification trigger timing.
-//
-//  Buffer Logic: Feed 300 samples. Classifier called exactly once after sample 250,
-//  and again exactly at sample 300 (stride of 50).
+//  Temporalis buffer: 50×6 tensor, stride 50 (one inference per second @ 50 Hz).
 //
 
 import XCTest
 import CoreML
 @testable import OralableCore
 
-// MARK: - Counting Classifier
+private final class CountingTemporalisClassifier: TemporalisClassifier, @unchecked Sendable {
+    nonisolated(unsafe) private var _invocationCount: Int = 0
 
-private final class CountingBruxismClassifier: BruxismClassifier, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _invocationCount: Int = 0
+    var invocationCount: Int { _invocationCount }
 
-    var invocationCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return _invocationCount
+    func classify(input: MLMultiArray) async -> TemporalisState {
+        _invocationCount += 1
+        return .quiet
     }
 
-    func classify(input: MLMultiArray) async -> BruxismState {
-        lock.lock()
-        _invocationCount += 1
-        lock.unlock()
-        return .quiet
+    func probabilities(input: MLMultiArray) async -> TemporalisProbabilities? {
+        nil
     }
 }
 
-// MARK: - Tests
-
 final class InferenceManagerTests: XCTestCase {
 
-    func testBufferLogic_classifierCalledAt250And300() async {
-        let classifier = CountingBruxismClassifier()
+    func testBufferLogic_classifierEveryFiftySamplesAfterWindow() async {
+        let classifier = CountingTemporalisClassifier()
         let manager = MAMInferenceManager(classifier: classifier)
 
-        // Feed 300 samples
         for i in 1...300 {
-            manager.feed(
-                ppgRedAC: Double(i),
-                ppgIRDC: Double(i * 2),
-                accelMagnitude: Double(i) / 100.0
+            manager.addSample(
+                greenAC: Double(i),
+                irDC: Double(i * 2),
+                redAC: Double(i) * 0.5,
+                accelX: Double(i) / 100.0,
+                accelY: 0,
+                accelZ: 1.0
             )
         }
 
-        // Allow async classification to complete
-        try? await Task.sleep(nanoseconds: 100_000_000)  // 100 ms
+        try? await Task.sleep(nanoseconds: 150_000_000)
 
-        // Classifier should be called exactly twice: at sample 250 and sample 300
-        XCTAssertEqual(classifier.invocationCount, 2, "Classifier should be invoked exactly twice (at sample 250 and 300)")
+        XCTAssertEqual(classifier.invocationCount, 6, "Expected 6 inferences for 300 samples (50 Hz stride, 50-sample window)")
     }
 
-    func testBufferLogic_noClassificationBefore250Samples() async {
-        let classifier = CountingBruxismClassifier()
+    func testNoClassificationBeforeFiftySamples() async {
+        let classifier = CountingTemporalisClassifier()
         let manager = MAMInferenceManager(classifier: classifier)
 
-        // Feed only 249 samples
-        for i in 1...249 {
-            manager.feed(
-                ppgRedAC: Double(i),
-                ppgIRDC: Double(i),
-                accelMagnitude: 1.0
+        for i in 1...49 {
+            manager.addSample(
+                greenAC: Double(i),
+                irDC: Double(i),
+                redAC: 0,
+                accelX: 0,
+                accelY: 0,
+                accelZ: 1.0
             )
         }
 
-        try? await Task.sleep(nanoseconds: 50_000_000)  // 50 ms
+        try? await Task.sleep(nanoseconds: 50_000_000)
 
-        XCTAssertEqual(classifier.invocationCount, 0, "Classifier should not be invoked before 250 samples")
+        XCTAssertEqual(classifier.invocationCount, 0)
     }
 
     func testTensorShape() {
         var buffer = ClassificationBuffer()
-        for i in 1...250 {
-            buffer.append(ppgRedAC: Double(i), ppgIRDC: Double(i * 2), accelMagnitude: Double(i) / 100.0)
+        for i in 1...50 {
+            buffer.append(
+                greenAC: Double(i),
+                irDC: Double(i * 2),
+                redAC: Double(i) * 0.5,
+                accelX: 0.1,
+                accelY: 0.2,
+                accelZ: 0.9
+            )
         }
 
         guard let array = buffer.convertToMultiArray() else {
-            XCTFail("convertToMultiArray should return non-nil when buffer has 250 samples")
+            XCTFail("convertToMultiArray should return non-nil when buffer has 50 samples")
             return
         }
 
-        XCTAssertEqual(array.shape.count, 3, "MLMultiArray should have 3 dimensions")
-        XCTAssertEqual(array.shape[0].intValue, 1, "Batch dimension should be 1")
-        XCTAssertEqual(array.shape[1].intValue, 250, "Time dimension should be 250")
-        XCTAssertEqual(array.shape[2].intValue, 3, "Channel dimension should be 3")
+        XCTAssertEqual(array.shape.count, 3)
+        XCTAssertEqual(array.shape[0].intValue, 1)
+        XCTAssertEqual(array.shape[1].intValue, 50)
+        XCTAssertEqual(array.shape[2].intValue, 6)
     }
 
     func testTensorDataType() {
         var buffer = ClassificationBuffer()
-        for i in 1...250 {
-            buffer.append(ppgRedAC: Double(i), ppgIRDC: Double(i), accelMagnitude: 1.0)
+        for i in 1...50 {
+            buffer.append(greenAC: Double(i), irDC: 1, redAC: 1, accelX: 0, accelY: 0, accelZ: 1)
         }
 
         guard let array = buffer.convertToMultiArray() else {
@@ -103,19 +101,17 @@ final class InferenceManagerTests: XCTestCase {
             return
         }
 
-        XCTAssertEqual(array.dataType, .float32, "MLMultiArray should use Float32 precision")
+        XCTAssertEqual(array.dataType, .float32)
     }
 
     func testResetClearsBuffer() {
         let manager = MAMInferenceManager()
-        for i in 1...100 {
-            manager.feed(ppgRedAC: Double(i), ppgIRDC: Double(i), accelMagnitude: 1.0)
+        for i in 1...30 {
+            manager.addSample(greenAC: Double(i), irDC: 1, redAC: 1, accelX: 0, accelY: 0, accelZ: 1)
         }
         manager.reset()
-        // After reset, feeding 250 more should trigger classification (buffer was cleared)
-        for i in 1...250 {
-            manager.feed(ppgRedAC: Double(i), ppgIRDC: Double(i), accelMagnitude: 1.0)
+        for i in 1...50 {
+            manager.addSample(greenAC: Double(i), irDC: 1, redAC: 1, accelX: 0, accelY: 0, accelZ: 1)
         }
-        // No direct way to verify; at least we ensure reset doesn't crash
     }
 }
