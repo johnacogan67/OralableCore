@@ -98,6 +98,7 @@ public final class CoreMLTemporalisClassifier: TemporalisClassifier, @unchecked 
             let config = MLModelConfiguration()
             config.computeUnits = .cpuAndNeuralEngine
             self.model = try MLModel(contentsOf: url, configuration: config)
+            print("MAM Net Weights Loaded: Temporalis Verified")
         } catch {
             Logger.shared.warning("[Temporalis] Failed to load model: \(error)")
             self.model = nil
@@ -117,7 +118,9 @@ public final class CoreMLTemporalisClassifier: TemporalisClassifier, @unchecked 
             do {
                 let inputProvider = try MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(multiArray: input)])
                 let output = try model.prediction(from: inputProvider)
-                guard let probArray = output.featureValue(for: "probabilities")?.multiArrayValue else {
+                let probArray = output.featureValue(for: "probabilities")?.multiArrayValue
+                    ?? output.featureValue(for: "Identity")?.multiArrayValue
+                guard let probArray else {
                     return nil
                 }
                 let quiet = probArray[[0, 0] as [NSNumber]].doubleValue
