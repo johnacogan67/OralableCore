@@ -124,6 +124,13 @@ public actor SensorDataBuffer {
         history.removeAll()
     }
 
+    /// Atomically return all buffered samples and clear memory (for long-session auto-flush).
+    public func removeAllCopying() -> [SensorData] {
+        let out = history
+        history.removeAll()
+        return out
+    }
+
     /// Remove data older than the specified date
     /// - Parameter date: Cutoff date
     /// - Returns: Number of items removed

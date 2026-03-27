@@ -98,7 +98,6 @@ public final class CoreMLTemporalisClassifier: TemporalisClassifier, @unchecked 
             let config = MLModelConfiguration()
             config.computeUnits = .cpuAndNeuralEngine
             self.model = try MLModel(contentsOf: url, configuration: config)
-            print("MAM Net Weights Loaded: Temporalis Verified")
         } catch {
             Logger.shared.warning("[Temporalis] Failed to load model: \(error)")
             self.model = nil

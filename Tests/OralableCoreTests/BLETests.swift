@@ -731,6 +731,16 @@ final class SensorDataBufferTests: XCTestCase {
         XCTAssertTrue(isEmpty)
     }
 
+    func testBufferRemoveAllCopying() async {
+        let buffer = SensorDataBuffer(maxCapacity: 100)
+        await buffer.append(createTestSensorData())
+        await buffer.append(createTestSensorData())
+        let drained = await buffer.removeAllCopying()
+        XCTAssertEqual(drained.count, 2)
+        let count = await buffer.count
+        XCTAssertEqual(count, 0)
+    }
+
     // MARK: - Data Access
 
     func testBufferLatest() async {
