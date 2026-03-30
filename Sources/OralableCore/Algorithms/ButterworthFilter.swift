@@ -33,6 +33,7 @@ public class ButterworthFilter {
     public let order: Int
 
     private var sosCoefficients: [[Double]] = []
+    /// Per-section filter memory for the SOS cascade: one `[s1, s2]` row per biquad (DF-II transposed). Persisted across `processSample` calls.
     private var states: [[Double]] = []
     private var b: [Double] = []
     private var a: [Double] = []
@@ -167,21 +168,15 @@ public class ButterworthFilter {
     public func processSample(_ input: Double) -> Double {
         guard !b.isEmpty && !a.isEmpty else { return input }
 
-        // Cascaded second-order sections (4th-order = 2 biquads). Each section keeps [s1, s2] (DF-II transposed delays).
+        // SOS cascade (monic denominator, a0 = 1 in stored rows — see compute*Coefficients). Output of section i feeds section i+1.
         if !sosCoefficients.isEmpty {
             var x = input
             for i in 0..<sosCoefficients.count {
-                let c = sosCoefficients[i]
-                let b0 = c[0], b1 = c[1], b2 = c[2], a0 = c[3], a1 = c[4], a2 = c[5]
-                let a0n = a0 == 0 ? 1.0 : a0
-                let b0n = b0 / a0n, b1n = b1 / a0n, b2n = b2 / a0n
-                let a1n = a1 / a0n, a2n = a2 / a0n
-
-                var s = states[i]
-                let y = b0n * x + s[0]
-                s[0] = b1n * x - a1n * y + s[1]
-                s[1] = b2n * x - a2n * y
-                states[i] = s
+                let b0 = sosCoefficients[i][0], b1 = sosCoefficients[i][1], b2 = sosCoefficients[i][2]
+                let a1 = sosCoefficients[i][4], a2 = sosCoefficients[i][5]
+                let y = b0 * x + states[i][0]
+                states[i][0] = b1 * x - a1 * y + states[i][1]
+                states[i][1] = b2 * x - a2 * y
                 x = y
             }
             return x
