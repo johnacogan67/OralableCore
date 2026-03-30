@@ -167,6 +167,26 @@ public class ButterworthFilter {
     public func processSample(_ input: Double) -> Double {
         guard !b.isEmpty && !a.isEmpty else { return input }
 
+        // Cascaded second-order sections (4th-order = 2 biquads). Each section keeps [s1, s2] (DF-II transposed delays).
+        if !sosCoefficients.isEmpty {
+            var x = input
+            for i in 0..<sosCoefficients.count {
+                let c = sosCoefficients[i]
+                let b0 = c[0], b1 = c[1], b2 = c[2], a0 = c[3], a1 = c[4], a2 = c[5]
+                let a0n = a0 == 0 ? 1.0 : a0
+                let b0n = b0 / a0n, b1n = b1 / a0n, b2n = b2 / a0n
+                let a1n = a1 / a0n, a2n = a2 / a0n
+
+                var s = states[i]
+                let y = b0n * x + s[0]
+                s[0] = b1n * x - a1n * y + s[1]
+                s[1] = b2n * x - a2n * y
+                states[i] = s
+                x = y
+            }
+            return x
+        }
+
         let output = b[0] * input + directState[0]
 
         for i in 0..<(directState.count - 1) {
@@ -186,7 +206,8 @@ public class ButterworthFilter {
     public func filtfilt(_ input: [Double]) -> [Double] {
         guard input.count > 3 else { return input }
 
-        let savedState = directState
+        let savedDirect = directState
+        let savedSOS = states
 
         reset()
         var forward = process(input)
@@ -198,7 +219,8 @@ public class ButterworthFilter {
 
         backward.reverse()
 
-        directState = savedState
+        directState = savedDirect
+        states = savedSOS
 
         return backward
     }
