@@ -168,15 +168,14 @@ public class ButterworthFilter {
     public func processSample(_ input: Double) -> Double {
         guard !b.isEmpty && !a.isEmpty else { return input }
 
-        // SOS cascade (monic denominator, a0 = 1 in stored rows — see compute*Coefficients). Output of section i feeds section i+1.
         if !sosCoefficients.isEmpty {
             var x = input
             for i in 0..<sosCoefficients.count {
-                let b0 = sosCoefficients[i][0], b1 = sosCoefficients[i][1], b2 = sosCoefficients[i][2]
-                let a1 = sosCoefficients[i][4], a2 = sosCoefficients[i][5]
-                let y = b0 * x + states[i][0]
-                states[i][0] = b1 * x - a1 * y + states[i][1]
-                states[i][1] = b2 * x - a2 * y
+                let b = sosCoefficients[i]
+                // Direct Form II Transposed for cascaded sections
+                let y = b[0] * x + states[i][0]
+                states[i][0] = b[1] * x - b[4] * y + states[i][1]
+                states[i][1] = b[2] * x - b[5] * y
                 x = y
             }
             return x
