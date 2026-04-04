@@ -251,6 +251,8 @@ public struct ClassificationBuffer: Sendable {
     public static let windowSize: Int = 50
     public static let strideSize: Int = 50
     public static let historySize: Int = 250
+    private static let zScoreEpsilon: Double = 1e-5
+    private static let zScoreClamp: ClosedRange<Double> = -5.0...5.0
 
     public init() {
         self.greenAC = []
@@ -313,19 +315,23 @@ public struct ClassificationBuffer: Sendable {
         guard let array = try? MLMultiArray(shape: shape, dataType: .float32) else {
             return nil
         }
-        let g = greenAC.suffix(Self.windowSize)
-        let ir = irDC.suffix(Self.windowSize)
-        let r = redAC.suffix(Self.windowSize)
-        let ax = accelX.suffix(Self.windowSize)
-        let ay = accelY.suffix(Self.windowSize)
-        let az = accelZ.suffix(Self.windowSize)
+        let g = Array(greenAC.suffix(Self.windowSize))
+        let irRaw = Array(irDC.suffix(Self.windowSize))
+        let r = Array(redAC.suffix(Self.windowSize))
+        let axRaw = Array(accelX.suffix(Self.windowSize))
+        let ayRaw = Array(accelY.suffix(Self.windowSize))
+        let azRaw = Array(accelZ.suffix(Self.windowSize))
+        let ir = Self.zScoreNormalized(irRaw)
+        let ax = Self.zScoreNormalized(axRaw)
+        let ay = Self.zScoreNormalized(ayRaw)
+        let az = Self.zScoreNormalized(azRaw)
         for t in 0..<Self.windowSize {
-            array[[0, t, 0] as [NSNumber]] = NSNumber(value: Float(g[g.startIndex + t]))
-            array[[0, t, 1] as [NSNumber]] = NSNumber(value: Float(ir[ir.startIndex + t]))
-            array[[0, t, 2] as [NSNumber]] = NSNumber(value: Float(r[r.startIndex + t]))
-            array[[0, t, 3] as [NSNumber]] = NSNumber(value: Float(ax[ax.startIndex + t]))
-            array[[0, t, 4] as [NSNumber]] = NSNumber(value: Float(ay[ay.startIndex + t]))
-            array[[0, t, 5] as [NSNumber]] = NSNumber(value: Float(az[az.startIndex + t]))
+            array[[0, t, 0] as [NSNumber]] = NSNumber(value: Float(g[t]))
+            array[[0, t, 1] as [NSNumber]] = NSNumber(value: Float(ir[t]))
+            array[[0, t, 2] as [NSNumber]] = NSNumber(value: Float(r[t]))
+            array[[0, t, 3] as [NSNumber]] = NSNumber(value: Float(ax[t]))
+            array[[0, t, 4] as [NSNumber]] = NSNumber(value: Float(ay[t]))
+            array[[0, t, 5] as [NSNumber]] = NSNumber(value: Float(az[t]))
         }
         return array
     }
@@ -334,8 +340,9 @@ public struct ClassificationBuffer: Sendable {
         guard count >= Self.windowSize else { return nil }
 
         let irHistory = Array(irDC.suffix(Self.historySize))
-        let irRecent = Array(irDC.suffix(Self.windowSize))
-        guard !irHistory.isEmpty, !irRecent.isEmpty else { return nil }
+        let irRecentRaw = Array(irDC.suffix(Self.windowSize))
+        let irRecentNorm = Self.zScoreNormalized(irRecentRaw)
+        guard !irHistory.isEmpty, !irRecentRaw.isEmpty else { return nil }
 
         let baselineWindowCount = min(Self.windowSize, irHistory.count)
         let baselineWindow = Array(irHistory.prefix(baselineWindowCount))
@@ -364,17 +371,45 @@ public struct ClassificationBuffer: Sendable {
             motionVariance = varianceSum / Double(motionMag.count)
         }
 
-        let irMin = irRecent.min() ?? 0
-        let irMax = irRecent.max() ?? 0
+        let irRawMin = irRecentRaw.min() ?? 0
+        let irRawMax = irRecentRaw.max() ?? 0
+        let irNormMin = irRecentNorm.min() ?? 0
+        let irNormMax = irRecentNorm.max() ?? 0
+        let spo2ForDebug = Self.sanitizeSpO2(latestSpO2Estimate)
 
         return MAMFeatureSnapshot(
             irDCBaseline: rollingMean,
             irDCShiftPercent: shiftPercent,
-            spo2Estimate: latestSpO2Estimate,
+            spo2Estimate: spo2ForDebug,
             motionVariance: motionVariance,
-            irDCMin: irMin,
-            irDCMax: irMax
+            irDCRawMin: irRawMin,
+            irDCRawMax: irRawMax,
+            irDCNormMin: irNormMin,
+            irDCNormMax: irNormMax
         )
+    }
+
+    private static func zScoreNormalized(_ values: [Double]) -> [Double] {
+        guard !values.isEmpty else { return [] }
+        let mean = values.reduce(0.0, +) / Double(values.count)
+        var varSum = 0.0
+        for v in values {
+            let d = v - mean
+            varSum += d * d
+        }
+        let std = sqrt(varSum / Double(values.count))
+        let denom = std + zScoreEpsilon
+        return values.map { v in
+            let z = (v - mean) / denom
+            return min(zScoreClamp.upperBound, max(zScoreClamp.lowerBound, z))
+        }
+    }
+
+    private static func sanitizeSpO2(_ value: Double?) -> Double {
+        guard let value, value.isFinite, !value.isNaN, value > 0 else {
+            return 98.0
+        }
+        return value
     }
 
     public mutating func reset() {
@@ -390,10 +425,12 @@ public struct ClassificationBuffer: Sendable {
 private struct MAMFeatureSnapshot: Sendable {
     let irDCBaseline: Double
     let irDCShiftPercent: Double
-    let spo2Estimate: Double?
+    let spo2Estimate: Double
     let motionVariance: Double
-    let irDCMin: Double
-    let irDCMax: Double
+    let irDCRawMin: Double
+    let irDCRawMax: Double
+    let irDCNormMin: Double
+    let irDCNormMax: Double
 }
 
 // MARK: - Inference Manager
@@ -459,7 +496,11 @@ public final class MAMInferenceManager: @unchecked Sendable {
     }
 
     public func updateSpO2Estimate(_ spo2: Double?) {
-        latestSpO2Estimate = spo2
+        if let spo2, spo2.isFinite, !spo2.isNaN, spo2 > 0 {
+            latestSpO2Estimate = spo2
+        } else {
+            latestSpO2Estimate = 98.0
+        }
     }
 
     private func runClassificationAsync(input: MLMultiArray, featureSnapshot: MAMFeatureSnapshot?) {
@@ -486,17 +527,16 @@ public final class MAMInferenceManager: @unchecked Sendable {
     }
 
     private func logFeatureSnapshot(_ snapshot: MAMFeatureSnapshot) {
-        let spo2Text = snapshot.spo2Estimate.map { String(format: "%.1f", $0) } ?? "n/a"
         Logger.shared.debug(
-            "[MAM_FEATURES] SpO2: \(spo2Text), IR_DC: \(String(format: "%.3f", snapshot.irDCBaseline)), Shift%: \(String(format: "%.3f", snapshot.irDCShiftPercent)), Motion: \(String(format: "%.6f", snapshot.motionVariance)), IR_DC_RANGE: [\(String(format: "%.3f", snapshot.irDCMin)), \(String(format: "%.3f", snapshot.irDCMax))]"
+            "[MAM_FEATURES] SpO2: \(String(format: "%.1f", snapshot.spo2Estimate)), IR_DC: \(String(format: "%.3f", snapshot.irDCBaseline)), Shift%: \(String(format: "%.3f", snapshot.irDCShiftPercent)), Motion: \(String(format: "%.6f", snapshot.motionVariance)), IR_DC_RAW_RANGE: [\(String(format: "%.3f", snapshot.irDCRawMin)), \(String(format: "%.3f", snapshot.irDCRawMax))], IR_DC_NORM_RANGE: [\(String(format: "%.3f", snapshot.irDCNormMin)), \(String(format: "%.3f", snapshot.irDCNormMax))]"
         )
 
-        if let spo2 = snapshot.spo2Estimate, spo2 > 0, spo2 < 90 {
-            Logger.shared.warning("[MAM_FEATURES] OOD warning: SpO2 estimate < 90 (\(String(format: "%.1f", spo2)))")
+        if snapshot.spo2Estimate < 90 {
+            Logger.shared.warning("[MAM_FEATURES] OOD warning: SpO2 estimate < 90 (\(String(format: "%.1f", snapshot.spo2Estimate)))")
         }
-        let irAbsMax = max(abs(snapshot.irDCMin), abs(snapshot.irDCMax))
-        if irAbsMax > 10 {
-            Logger.shared.warning("[MAM_FEATURES] OOD warning: IR-DC magnitude appears unnormalized (abs max \(String(format: "%.3f", irAbsMax)))")
+        let irNormAbsMax = max(abs(snapshot.irDCNormMin), abs(snapshot.irDCNormMax))
+        if irNormAbsMax > 4.8 {
+            Logger.shared.warning("[MAM_FEATURES] OOD warning: IR-DC normalized values are near clamp limits (abs max \(String(format: "%.3f", irNormAbsMax)))")
         }
     }
 
