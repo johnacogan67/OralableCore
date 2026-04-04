@@ -23,9 +23,16 @@ public struct IRDCResult: Sendable {
     /// Current normalized IR value (percentage above/below baseline)
     public let normalizedPercent: Double?
 
+    /// Relative occlusion drop over the rolling mean (percent).
+    public var relativeDropPercent5s: Double {
+        guard rollingMean5s > 1e-9 else { return 0 }
+        return (shift5s / rollingMean5s) * 100.0
+    }
+
     /// Whether shift indicates significant muscle activity
     public var indicatesActivity: Bool {
-        shift5s > AlgorithmSpec.irDCShiftThreshold
+        shift5s > AlgorithmSpec.irDCShiftThreshold ||
+            relativeDropPercent5s > AlgorithmSpec.irDCRelativeDropThresholdPercent
     }
 
     /// Whether normalized value exceeds activity threshold

@@ -164,13 +164,22 @@ public final class IRDCProcessor {
 
     public func hasSignificantShift(threshold: Double? = nil) -> Bool {
         let thresh = threshold ?? AlgorithmSpec.irDCShiftThreshold
-        return dcShift > thresh
+        if dcShift > thresh {
+            return true
+        }
+        return relativeDropPercent() > AlgorithmSpec.irDCRelativeDropThresholdPercent
     }
 
     public func isAboveActivityThreshold(threshold: Double? = nil) -> Bool? {
         guard let normalized = normalizedPercent else { return nil }
         let thresh = threshold ?? AlgorithmSpec.activityThresholdPercent
         return normalized > thresh
+    }
+
+    /// Relative occlusion drop over rolling mean (%), robust to elevated DC offsets.
+    public func relativeDropPercent() -> Double {
+        guard rollingMean > 1e-9 else { return 0 }
+        return (dcShift / rollingMean) * 100.0
     }
 
     public func getRecentRawValues(count: Int? = nil) -> [Double] {

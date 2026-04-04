@@ -87,21 +87,52 @@ public typealias MockMAMClassifier = MockTemporalisClassifier
 /// CoreML `BruxismMAM_Temporalis` — input [1, 50, 6], output softmax `probabilities` (1×4).
 public final class CoreMLTemporalisClassifier: TemporalisClassifier, @unchecked Sendable {
     private let model: MLModel?
+    private static let modelName = "BruxismMAM_Temporalis"
 
     public init() {
         do {
-            guard let url = Bundle.module.url(forResource: "BruxismMAM_Temporalis", withExtension: "mlpackage") else {
-                Logger.shared.warning("[Temporalis] BruxismMAM_Temporalis.mlpackage not found in bundle")
+            guard let url = Self.resolveModelURL() else {
+                Logger.shared.warning("[Temporalis] BruxismMAM_Temporalis model not found in package/app bundles")
                 self.model = nil
                 return
             }
             let config = MLModelConfiguration()
             config.computeUnits = .cpuAndNeuralEngine
             self.model = try MLModel(contentsOf: url, configuration: config)
+            Logger.shared.info("[MAM] SUCCESS: Temporalis Model Loaded from Bundle (\(url.lastPathComponent))")
         } catch {
             Logger.shared.warning("[Temporalis] Failed to load model: \(error)")
             self.model = nil
         }
+    }
+
+    private static func resolveModelURL() -> URL? {
+        let primaryCandidates: [URL?] = [
+            Bundle.module.url(forResource: modelName, withExtension: "mlpackage"),
+            Bundle.module.url(forResource: modelName, withExtension: "mlmodelc"),
+            Bundle.main.url(forResource: modelName, withExtension: "mlpackage"),
+            Bundle.main.url(forResource: modelName, withExtension: "mlmodelc")
+        ]
+        if let found = primaryCandidates.compactMap({ $0 }).first {
+            return found
+        }
+
+        let bundlesToScan = Bundle.allBundles + Bundle.allFrameworks
+        for bundle in bundlesToScan {
+            if let direct = bundle.url(forResource: modelName, withExtension: "mlmodelc")
+                ?? bundle.url(forResource: modelName, withExtension: "mlpackage") {
+                return direct
+            }
+            guard let resourceURL = bundle.resourceURL else { continue }
+            let nestedCandidates = [
+                resourceURL.appendingPathComponent("\(modelName).mlmodelc"),
+                resourceURL.appendingPathComponent("\(modelName).mlpackage")
+            ]
+            if let found = nestedCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+                return found
+            }
+        }
+        return nil
     }
 
     public func classify(input: MLMultiArray) async -> TemporalisState {
