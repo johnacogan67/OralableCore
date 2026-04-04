@@ -111,7 +111,7 @@ public enum AlgorithmSpec {
 
     /// Relative IR-DC drop threshold for tonic-like occlusion (percent of rolling mean).
     /// Helps preserve sensitivity when baseline offset is high (e.g., 3.1V coupling).
-    public static let irDCRelativeDropThresholdPercent: Double = 12.0
+    public static let irDCRelativeDropThresholdPercent: Double = 10.0
     
     // MARK: - Validation Windows
     
