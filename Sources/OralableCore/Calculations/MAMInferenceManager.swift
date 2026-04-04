@@ -146,6 +146,10 @@ public final class CoreMLTemporalisClassifier: TemporalisClassifier, @unchecked 
         guard let model = model else { return nil }
         return await Task.detached(priority: .userInitiated) {
             do {
+                let inputAudit = Self.auditInput(input)
+                Logger.shared.debug(
+                    "[MAM_INPUT_AUDIT] IR_DC[min=\(String(format: "%.3f", inputAudit.irMin)), max=\(String(format: "%.3f", inputAudit.irMax))] accelVar=\(String(format: "%.6f", inputAudit.motionVariance))"
+                )
                 let inputProvider = try MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(multiArray: input)])
                 let output = try model.prediction(from: inputProvider)
                 let probArray = output.featureValue(for: "probabilities")?.multiArrayValue
@@ -163,6 +167,31 @@ public final class CoreMLTemporalisClassifier: TemporalisClassifier, @unchecked 
                 return nil
             }
         }.value
+    }
+
+    private static func auditInput(_ input: MLMultiArray) -> (irMin: Double, irMax: Double, motionVariance: Double) {
+        var irValues: [Double] = []
+        var mags: [Double] = []
+        irValues.reserveCapacity(50)
+        mags.reserveCapacity(50)
+        for t in 0..<50 {
+            let ir = input[[0, t, 1] as [NSNumber]].doubleValue
+            let ax = input[[0, t, 3] as [NSNumber]].doubleValue
+            let ay = input[[0, t, 4] as [NSNumber]].doubleValue
+            let az = input[[0, t, 5] as [NSNumber]].doubleValue
+            irValues.append(ir)
+            mags.append(sqrt(ax * ax + ay * ay + az * az))
+        }
+        let irMin = irValues.min() ?? 0
+        let irMax = irValues.max() ?? 0
+        let mean = mags.reduce(0.0, +) / Double(max(1, mags.count))
+        var varSum = 0.0
+        for d in mags {
+            let e = d - mean
+            varSum += e * e
+        }
+        let motionVariance = mags.isEmpty ? 0 : varSum / Double(mags.count)
+        return (irMin, irMax, motionVariance)
     }
 }
 
@@ -221,6 +250,7 @@ public struct ClassificationBuffer: Sendable {
 
     public static let windowSize: Int = 50
     public static let strideSize: Int = 50
+    public static let historySize: Int = 250
 
     public init() {
         self.greenAC = []
@@ -249,23 +279,23 @@ public struct ClassificationBuffer: Sendable {
     }
 
     private mutating func trim() {
-        if greenAC.count > Self.windowSize {
-            greenAC.removeFirst(greenAC.count - Self.windowSize)
+        if greenAC.count > Self.historySize {
+            greenAC.removeFirst(greenAC.count - Self.historySize)
         }
-        if irDC.count > Self.windowSize {
-            irDC.removeFirst(irDC.count - Self.windowSize)
+        if irDC.count > Self.historySize {
+            irDC.removeFirst(irDC.count - Self.historySize)
         }
-        if redAC.count > Self.windowSize {
-            redAC.removeFirst(redAC.count - Self.windowSize)
+        if redAC.count > Self.historySize {
+            redAC.removeFirst(redAC.count - Self.historySize)
         }
-        if accelX.count > Self.windowSize {
-            accelX.removeFirst(accelX.count - Self.windowSize)
+        if accelX.count > Self.historySize {
+            accelX.removeFirst(accelX.count - Self.historySize)
         }
-        if accelY.count > Self.windowSize {
-            accelY.removeFirst(accelY.count - Self.windowSize)
+        if accelY.count > Self.historySize {
+            accelY.removeFirst(accelY.count - Self.historySize)
         }
-        if accelZ.count > Self.windowSize {
-            accelZ.removeFirst(accelZ.count - Self.windowSize)
+        if accelZ.count > Self.historySize {
+            accelZ.removeFirst(accelZ.count - Self.historySize)
         }
     }
 
@@ -300,6 +330,53 @@ public struct ClassificationBuffer: Sendable {
         return array
     }
 
+    fileprivate func featureSnapshot(latestSpO2Estimate: Double?) -> MAMFeatureSnapshot? {
+        guard count >= Self.windowSize else { return nil }
+
+        let irHistory = Array(irDC.suffix(Self.historySize))
+        let irRecent = Array(irDC.suffix(Self.windowSize))
+        guard !irHistory.isEmpty, !irRecent.isEmpty else { return nil }
+
+        let baselineWindowCount = min(Self.windowSize, irHistory.count)
+        let baselineWindow = Array(irHistory.prefix(baselineWindowCount))
+
+        let baseline = baselineWindow.reduce(0.0, +) / Double(max(1, baselineWindow.count))
+        let rollingMean = irHistory.reduce(0.0, +) / Double(max(1, irHistory.count))
+        let shiftAbsolute = baseline - rollingMean
+        let shiftPercent = rollingMean > 1e-9 ? (shiftAbsolute / rollingMean) * 100.0 : 0
+
+        let ax = Array(accelX.suffix(Self.windowSize))
+        let ay = Array(accelY.suffix(Self.windowSize))
+        let az = Array(accelZ.suffix(Self.windowSize))
+        var motionMag: [Double] = []
+        motionMag.reserveCapacity(ax.count)
+        for i in 0..<ax.count {
+            motionMag.append(sqrt(ax[i] * ax[i] + ay[i] * ay[i] + az[i] * az[i]))
+        }
+        let motionMean = motionMag.reduce(0.0, +) / Double(max(1, motionMag.count))
+        var motionVariance = 0.0
+        if !motionMag.isEmpty {
+            var varianceSum = 0.0
+            for m in motionMag {
+                let e = m - motionMean
+                varianceSum += e * e
+            }
+            motionVariance = varianceSum / Double(motionMag.count)
+        }
+
+        let irMin = irRecent.min() ?? 0
+        let irMax = irRecent.max() ?? 0
+
+        return MAMFeatureSnapshot(
+            irDCBaseline: rollingMean,
+            irDCShiftPercent: shiftPercent,
+            spo2Estimate: latestSpO2Estimate,
+            motionVariance: motionVariance,
+            irDCMin: irMin,
+            irDCMax: irMax
+        )
+    }
+
     public mutating func reset() {
         greenAC.removeAll()
         irDC.removeAll()
@@ -310,6 +387,15 @@ public struct ClassificationBuffer: Sendable {
     }
 }
 
+private struct MAMFeatureSnapshot: Sendable {
+    let irDCBaseline: Double
+    let irDCShiftPercent: Double
+    let spo2Estimate: Double?
+    let motionVariance: Double
+    let irDCMin: Double
+    let irDCMax: Double
+}
+
 // MARK: - Inference Manager
 
 public final class MAMInferenceManager: @unchecked Sendable {
@@ -318,6 +404,8 @@ public final class MAMInferenceManager: @unchecked Sendable {
     private let clinicalLog: ClinicalLogManager?
     private let classificationQueue: DispatchQueue
     private var samplesSinceLastClassification: Int = 0
+    private var latestSpO2Estimate: Double?
+    private var lastSampleArrival: Date?
 
     public var onClassificationResult: ((TemporalisState) -> Void)?
 
@@ -342,6 +430,15 @@ public final class MAMInferenceManager: @unchecked Sendable {
         accelY: Double,
         accelZ: Double
     ) {
+        let now = Date()
+        if let previous = lastSampleArrival {
+            let dt = now.timeIntervalSince(previous)
+            if dt > 0.35 {
+                Logger.shared.warning("[MAM_FEATURES] Input gap warning: \(String(format: "%.3f", dt))s between samples; 50Hz window may be underfilled")
+            }
+        }
+        lastSampleArrival = now
+
         buffer.append(
             greenAC: greenAC,
             irDC: irDC,
@@ -355,15 +452,23 @@ public final class MAMInferenceManager: @unchecked Sendable {
         if buffer.isFull && samplesSinceLastClassification >= ClassificationBuffer.strideSize {
             samplesSinceLastClassification = 0
             if let input = buffer.convertToMultiArray() {
-                runClassificationAsync(input: input)
+                let snapshot = buffer.featureSnapshot(latestSpO2Estimate: latestSpO2Estimate)
+                runClassificationAsync(input: input, featureSnapshot: snapshot)
             }
         }
     }
 
-    private func runClassificationAsync(input: MLMultiArray) {
+    public func updateSpO2Estimate(_ spo2: Double?) {
+        latestSpO2Estimate = spo2
+    }
+
+    private func runClassificationAsync(input: MLMultiArray, featureSnapshot: MAMFeatureSnapshot?) {
         classificationQueue.async { [weak self] in
             guard let self = self else { return }
             Task {
+                if let featureSnapshot {
+                    self.logFeatureSnapshot(featureSnapshot)
+                }
                 let probs = await self.classifier.probabilities(input: input)
                 if let probs = probs {
                     self.onTemporalisProbabilities?(probs)
@@ -380,8 +485,25 @@ public final class MAMInferenceManager: @unchecked Sendable {
         }
     }
 
+    private func logFeatureSnapshot(_ snapshot: MAMFeatureSnapshot) {
+        let spo2Text = snapshot.spo2Estimate.map { String(format: "%.1f", $0) } ?? "n/a"
+        Logger.shared.debug(
+            "[MAM_FEATURES] SpO2: \(spo2Text), IR_DC: \(String(format: "%.3f", snapshot.irDCBaseline)), Shift%: \(String(format: "%.3f", snapshot.irDCShiftPercent)), Motion: \(String(format: "%.6f", snapshot.motionVariance)), IR_DC_RANGE: [\(String(format: "%.3f", snapshot.irDCMin)), \(String(format: "%.3f", snapshot.irDCMax))]"
+        )
+
+        if let spo2 = snapshot.spo2Estimate, spo2 > 0, spo2 < 90 {
+            Logger.shared.warning("[MAM_FEATURES] OOD warning: SpO2 estimate < 90 (\(String(format: "%.1f", spo2)))")
+        }
+        let irAbsMax = max(abs(snapshot.irDCMin), abs(snapshot.irDCMax))
+        if irAbsMax > 10 {
+            Logger.shared.warning("[MAM_FEATURES] OOD warning: IR-DC magnitude appears unnormalized (abs max \(String(format: "%.3f", irAbsMax)))")
+        }
+    }
+
     public func reset() {
         buffer.reset()
         samplesSinceLastClassification = 0
+        latestSpO2Estimate = nil
+        lastSampleArrival = nil
     }
 }
