@@ -440,6 +440,8 @@ public final class MAMInferenceManager: @unchecked Sendable {
     private let classifier: any TemporalisClassifier
     private let clinicalLog: ClinicalLogManager?
     private let classificationQueue: DispatchQueue
+    /// Minimum IR-DC drop gate before running CoreML inference (percent).
+    private let activityGateShiftPercentThreshold: Double = 10.0
     private var samplesSinceLastClassification: Int = 0
     private var latestSpO2Estimate: Double?
     private var lastSampleArrival: Date?
@@ -509,6 +511,13 @@ public final class MAMInferenceManager: @unchecked Sendable {
             Task {
                 if let featureSnapshot {
                     self.logFeatureSnapshot(featureSnapshot)
+                    if featureSnapshot.irDCShiftPercent < self.activityGateShiftPercentThreshold {
+                        Logger.shared.debug(
+                            "[MAM_INPUT_AUDIT] Gate closed: shift \(String(format: "%.3f", featureSnapshot.irDCShiftPercent))% < \(String(format: "%.1f", self.activityGateShiftPercentThreshold))% threshold"
+                        )
+                        self.onClassificationResult?(.quiet)
+                        return
+                    }
                 }
                 let probs = await self.classifier.probabilities(input: input)
                 if let probs = probs {
