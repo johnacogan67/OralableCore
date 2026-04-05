@@ -511,13 +511,17 @@ public final class MAMInferenceManager: @unchecked Sendable {
             Task {
                 if let featureSnapshot {
                     self.logFeatureSnapshot(featureSnapshot)
-                    if featureSnapshot.irDCShiftPercent < self.activityGateShiftPercentThreshold {
+                    let shiftAbs = abs(featureSnapshot.irDCShiftPercent)
+                    if shiftAbs < self.activityGateShiftPercentThreshold {
                         Logger.shared.debug(
-                            "[MAM_INPUT_AUDIT] Gate closed: shift \(String(format: "%.3f", featureSnapshot.irDCShiftPercent))% < \(String(format: "%.1f", self.activityGateShiftPercentThreshold))% threshold"
+                            "[MAM_INPUT_AUDIT] Gate closed: |shift| \(String(format: "%.3f", shiftAbs))% < \(String(format: "%.1f", self.activityGateShiftPercentThreshold))% threshold (raw \(String(format: "%.3f", featureSnapshot.irDCShiftPercent))%)"
                         )
                         self.onClassificationResult?(.quiet)
                         return
                     }
+                    Logger.shared.debug(
+                        "[MAM_INPUT_AUDIT] Gate open: |shift| \(String(format: "%.3f", shiftAbs))% >= \(String(format: "%.1f", self.activityGateShiftPercentThreshold))% threshold (raw \(String(format: "%.3f", featureSnapshot.irDCShiftPercent))%)"
+                    )
                 }
                 let probs = await self.classifier.probabilities(input: input)
                 if let probs = probs {
