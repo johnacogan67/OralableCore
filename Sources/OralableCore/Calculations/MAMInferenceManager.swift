@@ -442,9 +442,12 @@ public final class MAMInferenceManager: @unchecked Sendable {
     private let classificationQueue: DispatchQueue
     /// Minimum IR-DC drop gate before running CoreML inference (percent).
     private let activityGateShiftPercentThreshold: Double = 10.0
+    private let inputGapWarningThresholdSeconds: TimeInterval = 1.0
+    private let inputGapWarningCooldownSeconds: TimeInterval = 10.0
     private var samplesSinceLastClassification: Int = 0
     private var latestSpO2Estimate: Double?
     private var lastSampleArrival: Date?
+    private var lastInputGapWarningAt: Date?
 
     public var onClassificationResult: ((TemporalisState) -> Void)?
 
@@ -472,8 +475,10 @@ public final class MAMInferenceManager: @unchecked Sendable {
         let now = Date()
         if let previous = lastSampleArrival {
             let dt = now.timeIntervalSince(previous)
-            if dt > 0.35 {
+            if dt > inputGapWarningThresholdSeconds,
+               lastInputGapWarningAt == nil || now.timeIntervalSince(lastInputGapWarningAt!) > inputGapWarningCooldownSeconds {
                 Logger.shared.warning("[MAM_FEATURES] Input gap warning: \(String(format: "%.3f", dt))s between samples; 50Hz window may be underfilled")
+                lastInputGapWarningAt = now
             }
         }
         lastSampleArrival = now
@@ -558,5 +563,6 @@ public final class MAMInferenceManager: @unchecked Sendable {
         samplesSinceLastClassification = 0
         latestSpO2Estimate = nil
         lastSampleArrival = nil
+        lastInputGapWarningAt = nil
     }
 }
