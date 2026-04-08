@@ -146,10 +146,6 @@ public final class CoreMLTemporalisClassifier: TemporalisClassifier, @unchecked 
         guard let model = model else { return nil }
         return await Task.detached(priority: .userInitiated) {
             do {
-                let inputAudit = Self.auditInput(input)
-                Logger.shared.debug(
-                    "[MAM_INPUT_AUDIT] IR_DC[min=\(String(format: "%.3f", inputAudit.irMin)), max=\(String(format: "%.3f", inputAudit.irMax))] accelVar=\(String(format: "%.6f", inputAudit.motionVariance))"
-                )
                 let inputProvider = try MLDictionaryFeatureProvider(dictionary: ["input": MLFeatureValue(multiArray: input)])
                 let output = try model.prediction(from: inputProvider)
                 let probArray = output.featureValue(for: "probabilities")?.multiArrayValue
@@ -444,10 +440,12 @@ public final class MAMInferenceManager: @unchecked Sendable {
     private let activityGateShiftPercentThreshold: Double = 10.0
     private let inputGapWarningThresholdSeconds: TimeInterval = 1.0
     private let inputGapWarningCooldownSeconds: TimeInterval = 10.0
+    private let diagnosticLogCooldownSeconds: TimeInterval = 15.0
     private var samplesSinceLastClassification: Int = 0
     private var latestSpO2Estimate: Double?
     private var lastSampleArrival: Date?
     private var lastInputGapWarningAt: Date?
+    private var lastDiagnosticLogAt: Date?
 
     public var onClassificationResult: ((TemporalisState) -> Void)?
 
@@ -514,28 +512,35 @@ public final class MAMInferenceManager: @unchecked Sendable {
         classificationQueue.async { [weak self] in
             guard let self = self else { return }
             Task {
+                let shouldLogDiagnostics = self.shouldEmitDiagnosticLog()
                 if let featureSnapshot {
-                    self.logFeatureSnapshot(featureSnapshot)
+                    self.logFeatureSnapshot(featureSnapshot, emitDebugLog: shouldLogDiagnostics)
                     let shiftAbs = abs(featureSnapshot.irDCShiftPercent)
                     if shiftAbs < self.activityGateShiftPercentThreshold {
-                        Logger.shared.debug(
-                            "[MAM_INPUT_AUDIT] Gate closed: |shift| \(String(format: "%.3f", shiftAbs))% < \(String(format: "%.1f", self.activityGateShiftPercentThreshold))% threshold (raw \(String(format: "%.3f", featureSnapshot.irDCShiftPercent))%)"
-                        )
+                        if shouldLogDiagnostics {
+                            Logger.shared.debug(
+                                "[MAM_INPUT_AUDIT] Gate closed: |shift| \(String(format: "%.3f", shiftAbs))% < \(String(format: "%.1f", self.activityGateShiftPercentThreshold))% threshold (raw \(String(format: "%.3f", featureSnapshot.irDCShiftPercent))%)"
+                            )
+                        }
                         self.onClassificationResult?(.quiet)
                         return
                     }
-                    Logger.shared.debug(
-                        "[MAM_INPUT_AUDIT] Gate open: |shift| \(String(format: "%.3f", shiftAbs))% >= \(String(format: "%.1f", self.activityGateShiftPercentThreshold))% threshold (raw \(String(format: "%.3f", featureSnapshot.irDCShiftPercent))%)"
-                    )
+                    if shouldLogDiagnostics {
+                        Logger.shared.debug(
+                            "[MAM_INPUT_AUDIT] Gate open: |shift| \(String(format: "%.3f", shiftAbs))% >= \(String(format: "%.1f", self.activityGateShiftPercentThreshold))% threshold (raw \(String(format: "%.3f", featureSnapshot.irDCShiftPercent))%)"
+                        )
+                    }
                 }
                 let probs = await self.classifier.probabilities(input: input)
                 if let probs = probs {
                     self.onTemporalisProbabilities?(probs)
                     self.onClassificationResult?(probs.dominantState)
                     self.clinicalLog?.append(timestamp: Date(), probabilities: probs)
-                    Logger.shared.debug(
-                        "[Temporalis] quiet=\(String(format: "%.3f", probs.quiet)) phasic=\(String(format: "%.3f", probs.phasic)) tonic=\(String(format: "%.3f", probs.tonic)) rescue=\(String(format: "%.3f", probs.rescue))"
-                    )
+                    if shouldLogDiagnostics {
+                        Logger.shared.debug(
+                            "[Temporalis] quiet=\(String(format: "%.3f", probs.quiet)) phasic=\(String(format: "%.3f", probs.phasic)) tonic=\(String(format: "%.3f", probs.tonic)) rescue=\(String(format: "%.3f", probs.rescue))"
+                        )
+                    }
                 } else {
                     let state = await self.classifier.classify(input: input)
                     self.onClassificationResult?(state)
@@ -544,10 +549,12 @@ public final class MAMInferenceManager: @unchecked Sendable {
         }
     }
 
-    private func logFeatureSnapshot(_ snapshot: MAMFeatureSnapshot) {
-        Logger.shared.debug(
-            "[MAM_FEATURES] SpO2: \(String(format: "%.1f", snapshot.spo2Estimate)), IR_DC: \(String(format: "%.3f", snapshot.irDCBaseline)), Shift%: \(String(format: "%.3f", snapshot.irDCShiftPercent)), Motion: \(String(format: "%.6f", snapshot.motionVariance)), IR_DC_RAW_RANGE: [\(String(format: "%.3f", snapshot.irDCRawMin)), \(String(format: "%.3f", snapshot.irDCRawMax))], IR_DC_NORM_RANGE: [\(String(format: "%.3f", snapshot.irDCNormMin)), \(String(format: "%.3f", snapshot.irDCNormMax))]"
-        )
+    private func logFeatureSnapshot(_ snapshot: MAMFeatureSnapshot, emitDebugLog: Bool) {
+        if emitDebugLog {
+            Logger.shared.debug(
+                "[MAM_FEATURES] SpO2: \(String(format: "%.1f", snapshot.spo2Estimate)), IR_DC: \(String(format: "%.3f", snapshot.irDCBaseline)), Shift%: \(String(format: "%.3f", snapshot.irDCShiftPercent)), Motion: \(String(format: "%.6f", snapshot.motionVariance)), IR_DC_RAW_RANGE: [\(String(format: "%.3f", snapshot.irDCRawMin)), \(String(format: "%.3f", snapshot.irDCRawMax))], IR_DC_NORM_RANGE: [\(String(format: "%.3f", snapshot.irDCNormMin)), \(String(format: "%.3f", snapshot.irDCNormMax))]"
+            )
+        }
 
         if snapshot.spo2Estimate < 90 {
             Logger.shared.warning("[MAM_FEATURES] OOD warning: SpO2 estimate < 90 (\(String(format: "%.1f", snapshot.spo2Estimate)))")
@@ -558,11 +565,25 @@ public final class MAMInferenceManager: @unchecked Sendable {
         }
     }
 
+    private func shouldEmitDiagnosticLog() -> Bool {
+        let now = Date()
+        guard let lastLogAt = lastDiagnosticLogAt else {
+            lastDiagnosticLogAt = now
+            return true
+        }
+        if now.timeIntervalSince(lastLogAt) >= diagnosticLogCooldownSeconds {
+            lastDiagnosticLogAt = now
+            return true
+        }
+        return false
+    }
+
     public func reset() {
         buffer.reset()
         samplesSinceLastClassification = 0
         latestSpO2Estimate = nil
         lastSampleArrival = nil
         lastInputGapWarningAt = nil
+        lastDiagnosticLogAt = nil
     }
 }
