@@ -441,11 +441,14 @@ public final class MAMInferenceManager: @unchecked Sendable {
     private let inputGapWarningThresholdSeconds: TimeInterval = 1.0
     private let inputGapWarningCooldownSeconds: TimeInterval = 10.0
     private let diagnosticLogCooldownSeconds: TimeInterval = 15.0
+    /// Suppress "gap/OOD" warnings during the first few seconds of a new stream.
+    private let warmupSuppressWarningsSeconds: TimeInterval = 10.0
     private var samplesSinceLastClassification: Int = 0
     private var latestSpO2Estimate: Double?
     private var lastSampleArrival: Date?
     private var lastInputGapWarningAt: Date?
     private var lastDiagnosticLogAt: Date?
+    private var warmupUntil: Date?
 
     public var onClassificationResult: ((TemporalisState) -> Void)?
 
@@ -471,9 +474,13 @@ public final class MAMInferenceManager: @unchecked Sendable {
         accelZ: Double
     ) {
         let now = Date()
+        if warmupUntil == nil {
+            warmupUntil = now.addingTimeInterval(warmupSuppressWarningsSeconds)
+        }
         if let previous = lastSampleArrival {
             let dt = now.timeIntervalSince(previous)
             if dt > inputGapWarningThresholdSeconds,
+               (warmupUntil == nil || now >= warmupUntil!),
                lastInputGapWarningAt == nil || now.timeIntervalSince(lastInputGapWarningAt!) > inputGapWarningCooldownSeconds {
                 Logger.shared.warning("[MAM_FEATURES] Input gap warning: \(String(format: "%.3f", dt))s between samples; 50Hz window may be underfilled")
                 lastInputGapWarningAt = now
@@ -556,11 +563,14 @@ public final class MAMInferenceManager: @unchecked Sendable {
             )
         }
 
-        if snapshot.spo2Estimate < 90 {
+        let now = Date()
+        let shouldEmitWarnings = warmupUntil == nil || now >= warmupUntil!
+
+        if shouldEmitWarnings, snapshot.spo2Estimate < 90 {
             Logger.shared.warning("[MAM_FEATURES] OOD warning: SpO2 estimate < 90 (\(String(format: "%.1f", snapshot.spo2Estimate)))")
         }
         let irNormAbsMax = max(abs(snapshot.irDCNormMin), abs(snapshot.irDCNormMax))
-        if irNormAbsMax > 4.8 {
+        if shouldEmitWarnings, irNormAbsMax > 4.8 {
             Logger.shared.warning("[MAM_FEATURES] OOD warning: IR-DC normalized values are near clamp limits (abs max \(String(format: "%.3f", irNormAbsMax)))")
         }
     }
@@ -585,5 +595,6 @@ public final class MAMInferenceManager: @unchecked Sendable {
         lastSampleArrival = nil
         lastInputGapWarningAt = nil
         lastDiagnosticLogAt = nil
+        warmupUntil = nil
     }
 }
