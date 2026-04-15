@@ -51,8 +51,9 @@ public class StateTransitionDetector: ObservableObject {
     /// Minimum SpO2 to consider device positioned
     public var minSpO2ForPositioned: Double = 70.0
 
-    /// Minimum perfusion index to consider device positioned
-    public var minPerfusionIndexForPositioned: Double = 0.001
+    /// Minimum perfusion index to consider device positioned.
+    /// Kept low because PI can be very small during early coupling / low gain.
+    public var minPerfusionIndexForPositioned: Double = 0.0001
 
     // MARK: - Published State
 
@@ -88,6 +89,12 @@ public class StateTransitionDetector: ObservableObject {
 
     /// Metric validity window (3 minutes)
     private let metricValiditySeconds: TimeInterval = 180
+
+    /// Grace period to avoid flapping to DataStreaming on brief gaps / transient PI drops.
+    private let positionedHoldSeconds: TimeInterval = 6
+
+    /// Last timestamp where positioning criteria were satisfied.
+    private var lastPositionedTimestamp: Date?
 
     // MARK: - Initialization
 
@@ -134,21 +141,21 @@ public class StateTransitionDetector: ObservableObject {
     // MARK: - Metric Updates
 
     /// Update heart rate value
-    public func updateHeartRate(_ hr: Double) {
+    public func updateHeartRate(_ hr: Double, at timestamp: Date) {
         currentHeartRate = hr
-        lastMetricUpdateTime = Date()
+        lastMetricUpdateTime = timestamp
     }
 
     /// Update SpO2 value
-    public func updateSpO2(_ spo2: Double) {
+    public func updateSpO2(_ spo2: Double, at timestamp: Date) {
         currentSpO2 = spo2
-        lastMetricUpdateTime = Date()
+        lastMetricUpdateTime = timestamp
     }
 
     /// Update perfusion index
-    public func updatePerfusionIndex(_ pi: Double) {
+    public func updatePerfusionIndex(_ pi: Double, at timestamp: Date) {
         currentPerfusionIndex = pi
-        lastMetricUpdateTime = Date()
+        lastMetricUpdateTime = timestamp
     }
 
     // MARK: - State Evaluation
@@ -160,17 +167,23 @@ public class StateTransitionDetector: ObservableObject {
         timestamp: Date,
         heartRate: Double? = nil,
         spO2: Double? = nil,
-        perfusionIndex: Double? = nil
+        perfusionIndex: Double? = nil,
+        temporalisState: TemporalisState? = nil
     ) -> (newState: DeviceRecordingState, didTransition: Bool) {
         // Update metrics if provided
         if let hr = heartRate {
-            updateHeartRate(hr)
+            updateHeartRate(hr, at: timestamp)
         }
         if let spo2 = spO2 {
-            updateSpO2(spo2)
+            updateSpO2(spo2, at: timestamp)
         }
         if let pi = perfusionIndex {
-            updatePerfusionIndex(pi)
+            updatePerfusionIndex(pi, at: timestamp)
+        }
+
+        if let temporalisState {
+            lastTemporalisState = temporalisState
+            lastTemporalisStateUpdateTime = timestamp
         }
 
         // During calibration, just collect samples
@@ -227,14 +240,31 @@ public class StateTransitionDetector: ObservableObject {
         let isPositioned = checkIsPositioned(timestamp: timestamp)
 
         if !isPositioned {
+            // If we were recently positioned, hold the state to prevent flapping.
+            if let lastPos = lastPositionedTimestamp,
+               timestamp.timeIntervalSince(lastPos) <= positionedHoldSeconds {
+                return currentState == .dataStreaming ? .positioned : currentState
+            }
             return .dataStreaming
         }
 
         // Device is positioned - check for activity
         if isCalibrated {
-            // Check if IR is above activity threshold
+            // If the ML model recently saw a non-quiet state, treat as activity.
+            // This helps capture grinding-like (phasic) bursts that may not produce
+            // a large IR-DC magnitude shift.
+            if let lastTemporalisState,
+               lastTemporalisState != .quiet,
+               let lastTemporalisStateUpdateTime,
+               timestamp.timeIntervalSince(lastTemporalisStateUpdateTime) <= 2.0 {
+                return .activity
+            }
+
+            // Check if IR-DC deviates from baseline beyond threshold.
+            // Temporalis occlusion can present as either a drop (negative) or rise (positive)
+            // depending on coupling / ambient light / firmware scaling, so use magnitude.
             if let normalized = calibrationManager.normalize(irValue) {
-                if normalized > activityThresholdPercent {
+                if abs(normalized) > activityThresholdPercent {
                     return .activity
                 }
             }
@@ -243,6 +273,11 @@ public class StateTransitionDetector: ObservableObject {
         // Positioned but no activity (or not calibrated)
         return .positioned
     }
+
+    // MARK: - ML (Temporalis) State
+
+    private var lastTemporalisState: TemporalisState?
+    private var lastTemporalisStateUpdateTime: Date?
 
     /// Check if device is positioned based on optical metrics
     private func checkIsPositioned(timestamp: Date) -> Bool {
@@ -255,16 +290,19 @@ public class StateTransitionDetector: ObservableObject {
 
         // Check HR
         if currentHeartRate >= Double(minHeartRateForPositioned) {
+            lastPositionedTimestamp = timestamp
             return true
         }
 
         // Check SpO2
         if currentSpO2 >= minSpO2ForPositioned {
+            lastPositionedTimestamp = timestamp
             return true
         }
 
         // Check Perfusion Index
         if currentPerfusionIndex >= minPerfusionIndexForPositioned {
+            lastPositionedTimestamp = timestamp
             return true
         }
 
@@ -305,6 +343,7 @@ public class StateTransitionDetector: ObservableObject {
         currentSpO2 = 0
         currentPerfusionIndex = 0
         lastMetricUpdateTime = Date.distantPast
+        lastPositionedTimestamp = nil
 
         Logger.shared.info("[StateTransitionDetector] Reset to initial state")
     }

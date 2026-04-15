@@ -12,7 +12,7 @@ import CoreML
 // MARK: - Temporalis State
 
 /// Four-class Temporalis / sleep-bruxism state from the research model
-public enum TemporalisState: String, Sendable, CaseIterable {
+public enum TemporalisState: String, Codable, Sendable, CaseIterable {
     case quiet
     case phasic
     case tonic
@@ -437,7 +437,7 @@ public final class MAMInferenceManager: @unchecked Sendable {
     private let clinicalLog: ClinicalLogManager?
     private let classificationQueue: DispatchQueue
     /// Minimum IR-DC drop gate before running CoreML inference (percent).
-    private let activityGateShiftPercentThreshold: Double = 10.0
+    private let activityGateShiftPercentThreshold: Double
     private let inputGapWarningThresholdSeconds: TimeInterval = 1.0
     private let inputGapWarningCooldownSeconds: TimeInterval = 10.0
     private let diagnosticLogCooldownSeconds: TimeInterval = 15.0
@@ -449,6 +449,9 @@ public final class MAMInferenceManager: @unchecked Sendable {
     private var lastInputGapWarningAt: Date?
     private var lastDiagnosticLogAt: Date?
     private var warmupUntil: Date?
+    /// After a large input gap, reset the buffer and suppress classification briefly to avoid
+    /// running inference on stale/underfilled windows.
+    private var suspendInferenceUntil: Date?
 
     public var onClassificationResult: ((TemporalisState) -> Void)?
 
@@ -457,11 +460,13 @@ public final class MAMInferenceManager: @unchecked Sendable {
 
     public init(
         classifier: any TemporalisClassifier = CoreMLTemporalisClassifier(),
-        clinicalLog: ClinicalLogManager? = ClinicalLogManager()
+        clinicalLog: ClinicalLogManager? = ClinicalLogManager(),
+        activityGateShiftPercentThreshold: Double = 10.0
     ) {
         self.buffer = ClassificationBuffer()
         self.classifier = classifier
         self.clinicalLog = clinicalLog
+        self.activityGateShiftPercentThreshold = activityGateShiftPercentThreshold
         self.classificationQueue = DispatchQueue(label: "com.oralable.temporalis.inference", qos: .utility)
     }
 
@@ -484,6 +489,12 @@ public final class MAMInferenceManager: @unchecked Sendable {
                lastInputGapWarningAt == nil || now.timeIntervalSince(lastInputGapWarningAt!) > inputGapWarningCooldownSeconds {
                 Logger.shared.warning("[MAM_FEATURES] Input gap warning: \(String(format: "%.3f", dt))s between samples; 50Hz window may be underfilled")
                 lastInputGapWarningAt = now
+            }
+            if dt > inputGapWarningThresholdSeconds {
+                // Hard reset to ensure the next inference window is fully fresh.
+                buffer.reset()
+                samplesSinceLastClassification = 0
+                suspendInferenceUntil = now.addingTimeInterval(2.0)
             }
         }
         lastSampleArrival = now
@@ -519,6 +530,11 @@ public final class MAMInferenceManager: @unchecked Sendable {
         classificationQueue.async { [weak self] in
             guard let self = self else { return }
             Task {
+                if let until = self.suspendInferenceUntil, Date() < until {
+                    self.onClassificationResult?(.quiet)
+                    return
+                }
+
                 let shouldLogDiagnostics = self.shouldEmitDiagnosticLog()
                 if let featureSnapshot {
                     self.logFeatureSnapshot(featureSnapshot, emitDebugLog: shouldLogDiagnostics)
@@ -596,5 +612,6 @@ public final class MAMInferenceManager: @unchecked Sendable {
         lastInputGapWarningAt = nil
         lastDiagnosticLogAt = nil
         warmupUntil = nil
+        suspendInferenceUntil = nil
     }
 }

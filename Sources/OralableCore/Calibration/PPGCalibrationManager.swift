@@ -72,8 +72,11 @@ public class PPGCalibrationManager: ObservableObject {
     /// Note: Real PPG signals naturally vary 30-100% due to heartbeat, respiration, and motion
     public var maxCoefficientOfVariation: Double = 1.5  // 150% - allows for normal PPG variability
 
-    /// Minimum valid IR value
-    public var minValidIR: Int = 10000
+    /// Minimum valid IR value.
+    ///
+    /// Note: Depending on firmware/scaling path, IR samples can be in the low-thousands
+    /// (e.g. ~4000). Keep this permissive and rely on stability checks + CV gating instead.
+    public var minValidIR: Int = 1
 
     /// Maximum valid IR value
     public var maxValidIR: Int = 5_000_000

@@ -68,6 +68,15 @@ public class AutomaticRecordingSession: ObservableObject {
     private var currentAccelY: Int = 0
     private var currentAccelZ: Int = 0
     private var currentBatteryMV: Int?
+    private var currentTemporalisState: TemporalisState?
+    private var lastSensorTimestamp: Date?
+
+    /// Monotonic counter for the session (independent of pending buffer/saves).
+    private var totalEventsRecorded: Int = 0
+
+    private var lastRecordedTemporalisState: TemporalisState?
+    private var lastRecordedTemporalisTimestamp: Date?
+    private let temporalisMinimumIntervalSeconds: TimeInterval = 10.0
 
     // MARK: - Callbacks
 
@@ -123,14 +132,21 @@ public class AutomaticRecordingSession: ObservableObject {
             return
         }
 
+        // Start a clean session state on every connect. Reconnects are common and we must not
+        // carry calibration/baseline across sessions, or event detection will jump states.
+        stateDetector.fullReset()
+
         isSessionActive = true
         sessionStartTime = Date()
         eventCount = 0
+        totalEventsRecorded = 0
+        lastRecordedTemporalisState = nil
+        lastRecordedTemporalisTimestamp = nil
         pendingEvents.removeAll()
 
         // Record initial DataStreaming state
         currentState = .dataStreaming
-        recordCurrentState()
+        recordCurrentState(at: sessionStartTime)
 
         // Start auto-save timer
         startAutoSaveTimer()
@@ -162,11 +178,15 @@ public class AutomaticRecordingSession: ObservableObject {
         isSessionActive = false
         sessionStartTime = nil
 
-        // Reset state detector
-        stateDetector.reset()
+        // Full reset (includes calibration) to avoid leaking baseline across reconnect sessions.
+        stateDetector.fullReset()
         currentState = .dataStreaming
         isCalibrated = false
         calibrationProgress = 0
+        currentTemporalisState = nil
+        totalEventsRecorded = 0
+        lastRecordedTemporalisState = nil
+        lastRecordedTemporalisTimestamp = nil
 
         Logger.shared.info("[AutomaticRecordingSession] Session stopped: \(finalEventCount) events recorded")
         onSessionStopped?(finalEventCount)
@@ -186,9 +206,12 @@ public class AutomaticRecordingSession: ObservableObject {
         accelX: Int? = nil,
         accelY: Int? = nil,
         accelZ: Int? = nil,
-        batteryMV: Int? = nil
+        batteryMV: Int? = nil,
+        temporalisState: TemporalisState? = nil
     ) {
         guard isSessionActive else { return }
+
+        lastSensorTimestamp = timestamp
 
         // Update current values
         currentIRValue = irValue
@@ -200,6 +223,7 @@ public class AutomaticRecordingSession: ObservableObject {
         if let y = accelY { currentAccelY = y }
         if let z = accelZ { currentAccelZ = z }
         if let battery = batteryMV { currentBatteryMV = battery }
+        if let temporalisState { currentTemporalisState = temporalisState }
 
         // Update calibration progress
         if stateDetector.calibrationManager.state.isCalibrating {
@@ -212,13 +236,16 @@ public class AutomaticRecordingSession: ObservableObject {
             timestamp: timestamp,
             heartRate: heartRate,
             spO2: spO2,
-            perfusionIndex: perfusionIndex
+            perfusionIndex: perfusionIndex,
+            temporalisState: currentTemporalisState
         )
 
         // State transition is handled by callback
         if result.didTransition {
             currentState = result.newState
         }
+
+        recordTemporalisEventIfNeeded(at: timestamp)
     }
 
     // MARK: - Calibration
@@ -238,7 +265,7 @@ public class AutomaticRecordingSession: ObservableObject {
 
     private func handleStateTransition(from previousState: DeviceRecordingState, to newState: DeviceRecordingState) {
         currentState = newState
-        recordCurrentState()
+        recordCurrentState(at: lastSensorTimestamp)
         onStateChanged?(newState)
 
         Logger.shared.info("[AutomaticRecordingSession] State: \(previousState.rawValue) → \(newState.rawValue)")
@@ -251,11 +278,13 @@ public class AutomaticRecordingSession: ObservableObject {
 
     // MARK: - Event Recording
 
-    private func recordCurrentState() {
+    private func recordCurrentState(at timestamp: Date? = nil) {
         let normalizedIR = stateDetector.calibrationManager.normalize(currentIRValue)
+        let eventTimestamp = timestamp ?? lastSensorTimestamp ?? Date()
 
+        totalEventsRecorded += 1
         let event = StateTransitionEvent(
-            timestamp: Date(),
+            timestamp: eventTimestamp,
             state: currentState,
             irValue: currentIRValue,
             normalizedIRPercent: normalizedIR,
@@ -267,18 +296,71 @@ public class AutomaticRecordingSession: ObservableObject {
             accelY: currentAccelY,
             accelZ: currentAccelZ,
             batteryMV: currentBatteryMV,
-            baseline: stateDetector.baseline > 0 ? stateDetector.baseline : nil
+            baseline: stateDetector.baseline > 0 ? stateDetector.baseline : nil,
+            temporalisState: currentTemporalisState
         )
 
         // Add to pending events
         pendingEventsLock.lock()
         pendingEvents.append(event)
-        eventCount = pendingEvents.count
+        eventCount = totalEventsRecorded
         pendingEventsLock.unlock()
 
         onEventRecorded?(event)
 
         Logger.shared.info("[AutomaticRecordingSession] Event #\(eventCount): \(currentState.rawValue)")
+    }
+
+    private func recordTemporalisEventIfNeeded(at timestamp: Date) {
+        guard isCalibrated else { return }
+        guard currentState == .activity else { return }
+        guard let state = currentTemporalisState else { return }
+        guard state == .phasic || state == .tonic else { return }
+
+        // Record on state changes, and never more frequently than the minimum interval.
+        if let lastRecordedTemporalisTimestamp,
+           timestamp.timeIntervalSince(lastRecordedTemporalisTimestamp) < temporalisMinimumIntervalSeconds {
+            // Allow immediate record if we switched between phasic <-> tonic (rare but useful).
+            if let lastRecordedTemporalisState, lastRecordedTemporalisState != state {
+                // continue
+            } else {
+                return
+            }
+        }
+
+        // If state hasn't changed since last record, don't spam repeated events.
+        if let lastRecordedTemporalisState, lastRecordedTemporalisState == state {
+            return
+        }
+
+        lastRecordedTemporalisState = state
+        lastRecordedTemporalisTimestamp = timestamp
+
+        totalEventsRecorded += 1
+        let event = StateTransitionEvent(
+            timestamp: timestamp,
+            state: .activity,
+            irValue: currentIRValue,
+            normalizedIRPercent: stateDetector.calibrationManager.normalize(currentIRValue),
+            heartRate: currentHeartRate > 0 ? currentHeartRate : nil,
+            spO2: currentSpO2 > 0 ? currentSpO2 : nil,
+            perfusionIndex: currentPerfusionIndex > 0 ? currentPerfusionIndex : nil,
+            temperature: currentTemperature,
+            accelX: currentAccelX,
+            accelY: currentAccelY,
+            accelZ: currentAccelZ,
+            batteryMV: currentBatteryMV,
+            baseline: stateDetector.baseline > 0 ? stateDetector.baseline : nil,
+            temporalisState: state
+        )
+
+        pendingEventsLock.lock()
+        pendingEvents.append(event)
+        eventCount = totalEventsRecorded
+        pendingEventsLock.unlock()
+
+        onEventRecorded?(event)
+        Logger.shared.info("[AutomaticRecordingSession] Event #\(eventCount): Temporalis \(state.rawValue)")
     }
 
     // MARK: - Auto-Save

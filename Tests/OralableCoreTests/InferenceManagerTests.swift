@@ -28,7 +28,7 @@ final class InferenceManagerTests: XCTestCase {
 
     func testBufferLogic_classifierEveryFiftySamplesAfterWindow() async {
         let classifier = CountingTemporalisClassifier()
-        let manager = MAMInferenceManager(classifier: classifier)
+        let manager = MAMInferenceManager(classifier: classifier, activityGateShiftPercentThreshold: 0.0)
 
         for i in 1...300 {
             manager.addSample(
@@ -41,14 +41,15 @@ final class InferenceManagerTests: XCTestCase {
             )
         }
 
-        try? await Task.sleep(nanoseconds: 150_000_000)
+        // Allow async dispatch + Task scheduling to complete on CI / loaded machines.
+        try? await Task.sleep(nanoseconds: 400_000_000)
 
         XCTAssertEqual(classifier.invocationCount, 6, "Expected 6 inferences for 300 samples (50 Hz stride, 50-sample window)")
     }
 
     func testNoClassificationBeforeFiftySamples() async {
         let classifier = CountingTemporalisClassifier()
-        let manager = MAMInferenceManager(classifier: classifier)
+        let manager = MAMInferenceManager(classifier: classifier, activityGateShiftPercentThreshold: 0.0)
 
         for i in 1...49 {
             manager.addSample(

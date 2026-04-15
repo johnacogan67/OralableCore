@@ -32,7 +32,8 @@ public struct StateEventCSVExporter: Sendable {
         "Accel_X",
         "Accel_Y",
         "Accel_Z",
-        "Battery_mV"
+        "Battery_mV",
+        "Temporalis_State"
     ]
 
     /// Header line for CSV
@@ -81,7 +82,8 @@ public struct StateEventCSVExporter: Sendable {
             String(event.accelX),
             String(event.accelY),
             String(event.accelZ),
-            event.batteryMV.map { String($0) } ?? ""
+            event.batteryMV.map { String($0) } ?? "",
+            event.temporalisState?.rawValue ?? ""
         ]
 
         return values.joined(separator: ",") + "\n"
@@ -134,6 +136,8 @@ public struct StateEventCSVExporter: Sendable {
         let accelY = Int(columns[10]) ?? 0
         let accelZ = Int(columns[11]) ?? 0
         let batteryMV = columns.count > 12 ? Int(columns[12]) : nil
+        let temporalisStateRaw = columns.count > 13 ? columns[13].trimmingCharacters(in: .whitespaces) : ""
+        let temporalisState = temporalisStateRaw.isEmpty ? nil : TemporalisState(rawValue: temporalisStateRaw)
 
         return StateTransitionEvent(
             timestamp: timestamp,
@@ -147,7 +151,8 @@ public struct StateEventCSVExporter: Sendable {
             accelX: accelX,
             accelY: accelY,
             accelZ: accelZ,
-            batteryMV: batteryMV
+            batteryMV: batteryMV,
+            temporalisState: temporalisState
         )
     }
 

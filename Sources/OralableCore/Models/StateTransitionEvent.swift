@@ -78,6 +78,11 @@ public struct StateTransitionEvent: Codable, Identifiable, Equatable, Sendable {
     /// Baseline value used for normalization (nil if not calibrated)
     public let baseline: Double?
 
+    // MARK: - Temporalis (ML) State
+
+    /// Dominant temporalis state at transition time (nil if not available)
+    public let temporalisState: TemporalisState?
+
     // MARK: - Initialization
 
     public init(
@@ -94,7 +99,8 @@ public struct StateTransitionEvent: Codable, Identifiable, Equatable, Sendable {
         accelY: Int,
         accelZ: Int,
         batteryMV: Int? = nil,
-        baseline: Double? = nil
+        baseline: Double? = nil,
+        temporalisState: TemporalisState? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -110,6 +116,7 @@ public struct StateTransitionEvent: Codable, Identifiable, Equatable, Sendable {
         self.accelZ = accelZ
         self.batteryMV = batteryMV
         self.baseline = baseline
+        self.temporalisState = temporalisState
     }
 
     // MARK: - Display Properties

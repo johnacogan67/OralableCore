@@ -33,7 +33,7 @@ public class EventDetector: ObservableObject {
 
     // MARK: - Configuration
 
-    /// Normalized threshold as percentage (e.g., 40% above baseline)
+    /// Normalized threshold as percentage magnitude (e.g., 40% change vs baseline)
     @Published public var normalizedThresholdPercent: Double = 40.0
 
     /// Minimum time signal must stay in new state before committing event change (debounce)
@@ -301,8 +301,10 @@ public class EventDetector: ObservableObject {
             return
         }
 
-        // Determine if above threshold
-        let aboveThreshold = normalizedValue > normalizedThresholdPercent
+        // Determine if above threshold.
+        // Temporalis occlusion can produce negative normalized values (IR-DC drop),
+        // so use magnitude to detect both directions.
+        let aboveThreshold = abs(normalizedValue) > normalizedThresholdPercent
 
         // First sample - initialize state
         if currentEventType == nil {
