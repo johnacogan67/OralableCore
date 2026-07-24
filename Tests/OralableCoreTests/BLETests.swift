@@ -29,11 +29,120 @@ final class BLEConstantsTests: XCTestCase {
 
     func testTGMAllCharacteristics() {
         let chars = BLEConstants.TGM.allCharacteristicUUIDs
-        XCTAssertEqual(chars.count, 4)
+        XCTAssertEqual(chars.count, 5)
         XCTAssertTrue(chars.contains(BLEConstants.TGM.sensorDataCharUUID))
         XCTAssertTrue(chars.contains(BLEConstants.TGM.accelerometerCharUUID))
         XCTAssertTrue(chars.contains(BLEConstants.TGM.commandCharUUID))
         XCTAssertTrue(chars.contains(BLEConstants.TGM.batteryCharUUID))
+        XCTAssertTrue(chars.contains(BLEConstants.TGM.statusCharUUID))
+    }
+
+    func testTGMStatusCharUUID() {
+        XCTAssertEqual(BLEConstants.TGM.statusCharUUID, "3A0FF009-98C4-46B2-94AF-1AEE0FD4C48E")
+    }
+
+    func testParseDeviceStatusPacket() {
+        let data = Data([1, 1, 2, 87, 1])
+        let status = BLEDataParser.parseDeviceStatusPacket(data)
+        XCTAssertNotNil(status)
+        XCTAssertTrue(status!.onDock)
+        XCTAssertTrue(status!.chargeActive)
+        XCTAssertTrue(status!.worn)
+        XCTAssertEqual(status!.deviceState, 2)
+        XCTAssertEqual(status!.batteryPercent, 87)
+    }
+
+    func testOperationalStateVitalsReady() {
+        let status = TGMDeviceStatus(
+            onDock: false,
+            chargeActive: false,
+            worn: true,
+            deviceState: 2,
+            batteryPercent: 55
+        )
+        XCTAssertEqual(
+            status.operationalState(userPlacementMode: 3, heartRateQuality: 0.6, spo2Quality: 0.55),
+            .vitalsReady
+        )
+        XCTAssertEqual(status.operationalState(userPlacementMode: 1), .onCharger)
+        let bench = TGMDeviceStatus(
+            onDock: false, chargeActive: false, worn: false, deviceState: 0, batteryPercent: 40
+        )
+        XCTAssertEqual(bench.operationalState(userPlacementMode: 2), .benchIdle)
+    }
+
+    func testStatusLEDMirrorOnChargerFlashing() {
+        let status = TGMDeviceStatus(
+            onDock: true,
+            chargeActive: true,
+            worn: false,
+            deviceState: 1,
+            batteryPercent: 65
+        )
+        let led = status.statusLED(userPlacementMode: 1)
+        XCTAssertEqual(led.color, .red)
+        XCTAssertEqual(led.pattern, .flashing)
+    }
+
+    func testStatusLEDMirrorOnBodyOff() {
+        let status = TGMDeviceStatus(
+            onDock: false,
+            chargeActive: false,
+            worn: true,
+            deviceState: 2,
+            batteryPercent: 70
+        )
+        let led = status.statusLED()
+        XCTAssertEqual(led.color, .none)
+        XCTAssertEqual(led.pattern, .off)
+    }
+
+    func testStatusLEDMirrorSolidOnStatTaper() {
+        let status = TGMDeviceStatus(
+            onDock: true,
+            chargeActive: false,
+            worn: false,
+            deviceState: 1,
+            batteryPercent: 65
+        )
+        let led = status.statusLED()
+        XCTAssertEqual(led.color, .red)
+        XCTAssertEqual(led.pattern, .solid)
+    }
+
+    func testStatusLEDMirrorSolidWhenTrulyFull() {
+        let status = TGMDeviceStatus(
+            onDock: true,
+            chargeActive: false,
+            worn: false,
+            deviceState: 1,
+            batteryPercent: 95
+        )
+        let led = status.statusLED(batteryMillivolts: 4350)
+        XCTAssertEqual(led.color, .red)
+        XCTAssertEqual(led.pattern, .solid)
+    }
+
+    func testNRFConnectHexSpacedFormat() {
+        let data = Data([0xE4, 0x0C, 0x00, 0x00])
+        XCTAssertEqual(NRFConnectBLELogger.hexSpaced(data), "E40C 0000")
+        let fw = Data([0x31, 0x2E, 0x30, 0x2E, 0x33, 0x36])
+        XCTAssertEqual(NRFConnectBLELogger.hexSpaced(fw), "312E 302E 3336")
+    }
+
+    func testNRFConnectCSVRows() {
+        let logger = NRFConnectBLELogger.shared
+        logger.clear()
+        logger.connected()
+        logger.settingNotify(true, for: "3A0FF004-98C4-46B2-94AF-1AEE0FD4C48E")
+        logger.updatedValue(of: "3A0FF004-98C4-46B2-94AF-1AEE0FD4C48E", data: Data([0xE4, 0x0C, 0x00, 0x00]))
+        let csv = logger.csvContent()
+        XCTAssertTrue(csv.hasPrefix("Timestamp,Source,Level,Line\n"))
+        XCTAssertTrue(csv.contains("Connected Device"))
+        XCTAssertTrue(csv.contains("Setting Boolean true for Notifying Characteristic 3A0FF004"))
+        XCTAssertTrue(csv.contains("Updated Value of Characteristic 3A0FF004"))
+        XCTAssertTrue(csv.contains("E40C 0000"))
+        logger.clear()
     }
 
     func testTGMPacketSizes() {
@@ -376,20 +485,20 @@ final class BLEDataParserTests: XCTestCase {
 
     func testParseTGMBatteryDataValid() {
         var data = Data()
-        var millivolts: Int32 = 3700  // ~50% battery
+        // Remapped gauge: (3980 - 3610) * 100 / 740 = 50%
+        var millivolts: Int32 = 3980
 
         data.append(contentsOf: withUnsafeBytes(of: &millivolts) { Array($0) })
 
         let reading = BLEDataParser.parseTGMBatteryData(data)
 
         XCTAssertNotNil(reading)
-        XCTAssertGreaterThan(reading?.percentage ?? 0, 0)
-        XCTAssertLessThanOrEqual(reading?.percentage ?? 100, 100)
+        XCTAssertEqual(reading?.percentage, 50)
     }
 
     func testParseTGMBatteryDataFullCharge() {
         var data = Data()
-        var millivolts: Int32 = 4200  // Full battery
+        var millivolts: Int32 = 4350
 
         data.append(contentsOf: withUnsafeBytes(of: &millivolts) { Array($0) })
 
@@ -401,14 +510,26 @@ final class BLEDataParserTests: XCTestCase {
 
     func testParseTGMBatteryDataLowBattery() {
         var data = Data()
-        var millivolts: Int32 = 3000  // Low battery
+        var millivolts: Int32 = 3610  // Remapped 0%
 
         data.append(contentsOf: withUnsafeBytes(of: &millivolts) { Array($0) })
 
         let reading = BLEDataParser.parseTGMBatteryData(data)
 
         XCTAssertNotNil(reading)
-        XCTAssertLessThan(reading?.percentage ?? 100, 20)
+        XCTAssertEqual(reading?.percentage, 0)
+    }
+
+    func testParseTGMBatteryDataBelowSoftFloor() {
+        var data = Data()
+        var millivolts: Int32 = 3300  // Below remapped 0%, still valid mV
+
+        data.append(contentsOf: withUnsafeBytes(of: &millivolts) { Array($0) })
+
+        let reading = BLEDataParser.parseTGMBatteryData(data)
+
+        XCTAssertNotNil(reading)
+        XCTAssertEqual(reading?.percentage, 0)
     }
 
     func testParseTGMBatteryDataOutOfRange() {

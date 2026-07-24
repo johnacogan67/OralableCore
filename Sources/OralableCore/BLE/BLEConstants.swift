@@ -40,12 +40,41 @@ public enum BLEConstants {
         /// Reports battery voltage in millivolts for accurate percentage calculation
         public static let batteryCharUUID = "3A0FF004-98C4-46B2-94AF-1AEE0FD4C48E"
 
-        /// All TGM characteristic UUIDs
+        /// Device ID characteristic (read, uint64)
+        public static let deviceIdCharUUID = "3A0FF005-98C4-46B2-94AF-1AEE0FD4C48E"
+
+        /// Firmware version string (read)
+        public static let firmwareVersionCharUUID = "3A0FF006-98C4-46B2-94AF-1AEE0FD4C48E"
+
+        /// PPG register read (write 1 byte reg addr, notify result)
+        public static let ppgRegReadCharUUID = "3A0FF007-98C4-46B2-94AF-1AEE0FD4C48E"
+
+        /// PPG register write (write 2 bytes: reg + value)
+        public static let ppgRegWriteCharUUID = "3A0FF008-98C4-46B2-94AF-1AEE0FD4C48E"
+
+        /// Device status (read/notify): on_dock, worn, device_state, battery_pct, charge_active
+        public static let statusCharUUID = "3A0FF009-98C4-46B2-94AF-1AEE0FD4C48E"
+
+        /// Core streaming + status UUIDs (pcb00003 nRF Connect baseline).
+        public static let nrfConnectCharacteristicUUIDs: [String] = [
+            sensorDataCharUUID,
+            accelerometerCharUUID,
+            commandCharUUID,
+            batteryCharUUID,
+            deviceIdCharUUID,
+            firmwareVersionCharUUID,
+            ppgRegReadCharUUID,
+            ppgRegWriteCharUUID,
+            statusCharUUID
+        ]
+
+        /// All TGM characteristic UUIDs required for streaming
         public static let allCharacteristicUUIDs: [String] = [
             sensorDataCharUUID,
             accelerometerCharUUID,
             commandCharUUID,
-            batteryCharUUID
+            batteryCharUUID,
+            statusCharUUID
         ]
 
         /// Expected packet sizes
@@ -61,6 +90,9 @@ public enum BLEConstants {
 
             /// Battery packet size (4 bytes = Int32 millivolts)
             public static let battery = 4
+
+            /// Status packet size (4 bytes)
+            public static let status = 4
         }
 
         /// Data format constants

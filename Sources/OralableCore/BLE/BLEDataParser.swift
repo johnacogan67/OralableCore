@@ -400,9 +400,8 @@ public struct BLEDataParser: Sendable {
     public static func parseTGMBatteryData(_ data: Data) -> BatteryData? {
         guard let millivolts = parseBatteryMillivolts(data) else { return nil }
         
-        // Convert to percentage (simple linear mapping)
-        // 3.0V = 0%, 4.2V = 100%
-        let percentage = Int(min(100, max(0, (millivolts - 3000) * 100 / 1200)))
+        // Oralable remapped gauge (FW >= 1.0.68): 3.61V = 0%, 4.35V = 100%
+        let percentage = Int(min(100, max(0, (millivolts - 3610) * 100 / 740)))
         
         return BatteryData(
             percentage: percentage,
@@ -418,6 +417,35 @@ public struct BLEDataParser: Sendable {
         let level = Int(data[0])
         guard level >= 0 && level <= 100 else { return nil }
         return level
+    }
+
+    // MARK: - Device Status Parsing (3A0FF009)
+
+    /// Parse firmware device status notify.
+    /// - 5 bytes (FW >= 1.0.47): on_dock, worn, device_state, battery_pct, charge_active
+    /// - 4 bytes (legacy): byte 0 = on_dock (was named charging), charge_active = false
+    public static func parseDeviceStatusPacket(_ data: Data, receivedAt: Date = Date()) -> TGMDeviceStatus? {
+        guard data.count >= 4 else { return nil }
+        let bytes = [UInt8](data.prefix(5))
+        let chargeActive = bytes.count >= 5 ? bytes[4] != 0 : false
+        return TGMDeviceStatus(
+            onDock: bytes[0] != 0,
+            chargeActive: chargeActive,
+            worn: bytes[1] != 0,
+            deviceState: bytes[2],
+            batteryPercent: bytes[3],
+            receivedAt: receivedAt
+        )
+    }
+
+    // MARK: - Device ID Parsing (3A0FF005)
+
+    /// Parse uint64 device ID from read response.
+    public static func parseDeviceId(_ data: Data) -> UInt64? {
+        guard data.count >= 8 else { return nil }
+        return data.withUnsafeBytes { ptr in
+            ptr.load(fromByteOffset: 0, as: UInt64.self)
+        }
     }
 
     // MARK: - Convenience / Legacy Parsing

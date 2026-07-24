@@ -2,118 +2,80 @@
 //  BatteryConversion.swift
 //  OralableCore
 //
-//  Created: December 30, 2025
-//  Accurate LiPo battery voltage to percentage conversion
-//  using empirical discharge curve instead of linear interpolation
+//  Oralable CG-320B user gauge — matches firmware battery_voltage_to_percent
+//  (FW >= 1.0.68): 4.35 V = 100%, 3.61 V = remapped 0% (operational empty).
 //
 
 import Foundation
 
 // MARK: - Battery Conversion Utilities
 
-/// Converts battery voltage to percentage using empirical LiPo discharge curve
-/// Provides more accurate readings than linear interpolation, especially at low charge levels
+/// Converts battery voltage to percentage using the Oralable remapped linear gauge.
 public struct BatteryConversion: Sendable {
 
-    // MARK: - Voltage Constants
+    // MARK: - Voltage Constants (aligned with oralable_nrf battery.c)
 
-    /// Fully charged voltage (mV)
-    public static let voltageMax: Int32 = 4200
+    /// Fully charged voltage (mV) — CG320B Vmax
+    public static let voltageMax: Int32 = 4350
 
-    /// Empty voltage - do not discharge below this (mV)
-    public static let voltageMin: Int32 = 3000
+    /// Remapped empty / soft floor (mV) — operational 0%, not chemistry empty (~3000)
+    public static let voltageMin: Int32 = 3610
 
-    /// Low battery warning threshold (mV)
-    public static let voltageLowWarning: Int32 = 3400
+    /// Chemistry empty (mV) — diagnostic % only
+    public static let chemistryVoltageMin: Int32 = 3000
 
-    /// Critical battery threshold (mV)
-    public static let voltageCritical: Int32 = 3200
+    /// Low battery warning threshold (mV) — ~15% on remapped gauge
+    public static let voltageLowWarning: Int32 = 3720
 
-    // MARK: - Discharge Curve
-
-    /// Empirical LiPo discharge curve data points
-    /// Based on typical single-cell LiPo discharge characteristics
-    /// Format: (voltage_mV, percentage)
-    private static let dischargeCurve: [(voltage: Int32, percentage: Double)] = [
-        (4200, 100.0),
-        (4150, 95.0),
-        (4110, 90.0),
-        (4080, 85.0),
-        (4020, 80.0),
-        (3980, 75.0),
-        (3950, 70.0),
-        (3910, 65.0),
-        (3870, 60.0),
-        (3840, 55.0),
-        (3800, 50.0),
-        (3760, 45.0),
-        (3720, 40.0),
-        (3680, 35.0),
-        (3650, 30.0),
-        (3610, 25.0),
-        (3570, 20.0),
-        (3500, 15.0),
-        (3400, 10.0),
-        (3300, 5.0),
-        (3200, 2.0),
-        (3000, 0.0)
-    ]
+    /// Critical / soft-floor adjacent (mV)
+    public static let voltageCritical: Int32 = 3610
 
     // MARK: - Conversion Methods
 
-    /// Convert battery voltage in millivolts to percentage using discharge curve
-    /// - Parameter millivolts: Battery voltage in millivolts (typically 3000-4200)
+    /// Convert battery voltage in millivolts to percentage (firmware-aligned linear map).
+    /// - Parameter millivolts: Battery voltage in millivolts
     /// - Returns: Battery percentage (0.0 to 100.0)
     public static func voltageToPercentage(millivolts: Int32) -> Double {
-        // Handle edge cases
+        return linearPercentage(millivolts: millivolts)
+    }
+
+    /// Linear map matching firmware: (V - 3610) * 100 / (4350 - 3610)
+    public static func linearPercentage(millivolts: Int32) -> Double {
         if millivolts >= voltageMax {
             return 100.0
         }
         if millivolts <= voltageMin {
             return 0.0
         }
-
-        // Find the two curve points that bracket the voltage
-        for i in 0..<(dischargeCurve.count - 1) {
-            let upper = dischargeCurve[i]
-            let lower = dischargeCurve[i + 1]
-
-            if millivolts <= upper.voltage && millivolts >= lower.voltage {
-                // Linear interpolation between the two points
-                let voltageRange = Double(upper.voltage - lower.voltage)
-                let percentageRange = upper.percentage - lower.percentage
-                let voltageOffset = Double(millivolts - lower.voltage)
-
-                let interpolatedPercentage = lower.percentage + (voltageOffset / voltageRange) * percentageRange
-                return min(100.0, max(0.0, interpolatedPercentage))
-            }
-        }
-
-        // Fallback (should not reach here)
-        return linearPercentage(millivolts: millivolts)
+        let range = Double(voltageMax - voltageMin)
+        let pct = Double(millivolts - voltageMin) * 100.0 / range
+        return min(100.0, max(0.0, pct))
     }
 
-    /// Simple linear conversion (for comparison/fallback)
-    /// - Parameter millivolts: Battery voltage in millivolts
-    /// - Returns: Battery percentage using linear interpolation
-    public static func linearPercentage(millivolts: Int32) -> Double {
-        let voltage = Double(millivolts) / 1000.0
-        let percentage = (voltage - 3.0) / (4.2 - 3.0) * 100.0
-        return min(100.0, max(0.0, percentage))
+    /// Full chemistry span: 3.0 V = 0%, 4.35 V = 100% (logs / diagnostics).
+    public static func chemistryPercentage(millivolts: Int32) -> Double {
+        if millivolts >= voltageMax {
+            return 100.0
+        }
+        if millivolts <= chemistryVoltageMin {
+            return 0.0
+        }
+        let range = Double(voltageMax - chemistryVoltageMin)
+        let pct = Double(millivolts - chemistryVoltageMin) * 100.0 / range
+        return min(100.0, max(0.0, pct))
+    }
+
+    public static func chemistryPercentageInt(millivolts: Int32) -> Int {
+        return Int(chemistryPercentage(millivolts: millivolts).rounded())
     }
 
     /// Convert voltage to percentage with rounding to integer
-    /// - Parameter millivolts: Battery voltage in millivolts
-    /// - Returns: Battery percentage as integer (0 to 100)
     public static func voltageToPercentageInt(millivolts: Int32) -> Int {
         return Int(voltageToPercentage(millivolts: millivolts).rounded())
     }
 
     // MARK: - Status Methods
 
-    /// Get battery status from percentage
-    /// - Parameter percentage: Battery percentage (0-100)
-    /// - Returns: BatteryStatus enum value
     public static func batteryStatus(percentage: Double) -> BatteryStatus {
         switch percentage {
         case 80...100: return .excellent
@@ -124,39 +86,24 @@ public struct BatteryConversion: Sendable {
         }
     }
 
-    /// Get battery status from voltage
-    /// - Parameter millivolts: Battery voltage in millivolts
-    /// - Returns: BatteryStatus enum value
     public static func batteryStatus(millivolts: Int32) -> BatteryStatus {
         return batteryStatus(percentage: voltageToPercentage(millivolts: millivolts))
     }
 
-    /// Check if battery needs charging
-    /// - Parameter percentage: Battery percentage
-    /// - Returns: true if percentage is below 20%
     public static func needsCharging(percentage: Double) -> Bool {
         return percentage < 20.0
     }
 
-    /// Check if battery is critically low
-    /// - Parameter percentage: Battery percentage
-    /// - Returns: true if percentage is below 10%
     public static func isCritical(percentage: Double) -> Bool {
         return percentage < 10.0
     }
 
     // MARK: - Formatting
 
-    /// Format percentage for display
-    /// - Parameter percentage: Battery percentage
-    /// - Returns: Formatted string like "85%"
     public static func formatPercentage(_ percentage: Double) -> String {
         return String(format: "%.0f%%", percentage)
     }
 
-    /// Format voltage for display
-    /// - Parameter millivolts: Battery voltage in millivolts
-    /// - Returns: Formatted string like "3.85V"
     public static func formatVoltage(millivolts: Int32) -> String {
         let volts = Double(millivolts) / 1000.0
         return String(format: "%.2fV", volts)
@@ -164,9 +111,6 @@ public struct BatteryConversion: Sendable {
 
     // MARK: - Data Parsing
 
-    /// Parse battery data from BLE packet and return percentage
-    /// - Parameter data: 4-byte Data containing Int32 millivolts (little-endian)
-    /// - Returns: Battery percentage or nil if data is invalid
     public static func parseAndConvert(data: Data) -> Double? {
         guard data.count >= 4 else { return nil }
 
@@ -177,9 +121,6 @@ public struct BatteryConversion: Sendable {
         return voltageToPercentage(millivolts: millivolts)
     }
 
-    /// Parse battery data and return both voltage and percentage
-    /// - Parameter data: 4-byte Data containing Int32 millivolts
-    /// - Returns: Tuple of (millivolts, percentage, status) or nil if invalid
     public static func parseComplete(data: Data) -> (millivolts: Int32, percentage: Double, status: BatteryStatus)? {
         guard data.count >= 4 else { return nil }
 
@@ -187,7 +128,6 @@ public struct BatteryConversion: Sendable {
             ptr.loadUnaligned(fromByteOffset: 0, as: Int32.self)
         }
 
-        // Validate voltage is in reasonable range
         guard millivolts >= 2500 && millivolts <= 4500 else { return nil }
 
         let percentage = voltageToPercentage(millivolts: millivolts)
@@ -196,19 +136,13 @@ public struct BatteryConversion: Sendable {
         return (millivolts: millivolts, percentage: percentage, status: status)
     }
 
-    // MARK: - Debug
-
     #if DEBUG
-    /// Generate comparison table between linear and curve-based percentages
-    /// Useful for debugging and validation
     public static func generateComparisonTable() -> [(voltage: Int32, linear: Double, curve: Double, difference: Double)] {
         var results: [(voltage: Int32, linear: Double, curve: Double, difference: Double)] = []
 
         for voltage in stride(from: voltageMax, through: voltageMin, by: -100) {
             let linear = linearPercentage(millivolts: voltage)
-            let curve = voltageToPercentage(millivolts: voltage)
-            let diff = curve - linear
-            results.append((voltage: voltage, linear: linear, curve: curve, difference: diff))
+            results.append((voltage: voltage, linear: linear, curve: linear, difference: 0))
         }
 
         return results

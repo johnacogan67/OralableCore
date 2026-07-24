@@ -27,18 +27,25 @@ public class AutomaticRecordingSession: ObservableObject {
     /// Auto-save interval in seconds
     public var autoSaveInterval: TimeInterval = 180  // 3 minutes
 
+    /// Resume a paused session after reconnect within this window (default 30 minutes).
+    public var resumeWithinSeconds: TimeInterval = 1800
+
     /// Whether to sync to CloudKit on disconnect
     public var syncOnDisconnect: Bool = true
 
     // MARK: - Published State
 
     @Published public private(set) var isSessionActive: Bool = false
+    @Published public private(set) var isSessionPaused: Bool = false
     @Published public private(set) var currentState: DeviceRecordingState = .dataStreaming
     @Published public private(set) var eventCount: Int = 0
     @Published public private(set) var sessionStartTime: Date?
     @Published public private(set) var lastSaveTime: Date?
     @Published public private(set) var isCalibrated: Bool = false
     @Published public private(set) var calibrationProgress: Double = 0
+
+    /// When true, do not auto-start PPG baseline calibration on positioned (Phase 0 vitals).
+    public var skipCalibration: Bool = false
 
     // MARK: - State Detector
 
@@ -77,6 +84,9 @@ public class AutomaticRecordingSession: ObservableObject {
     private var lastRecordedTemporalisState: TemporalisState?
     private var lastRecordedTemporalisTimestamp: Date?
     private let temporalisMinimumIntervalSeconds: TimeInterval = 10.0
+
+    private var pausedAt: Date?
+    private var firmwareReportsWorn: Bool = true
 
     // MARK: - Callbacks
 
@@ -127,16 +137,38 @@ public class AutomaticRecordingSession: ObservableObject {
 
     /// Called when BLE device connects
     public func onDeviceConnected() {
-        guard !isSessionActive else {
+        if isSessionPaused, let pausedAt,
+           Date().timeIntervalSince(pausedAt) < resumeWithinSeconds {
+            resumeSession()
+            return
+        }
+
+        if isSessionActive {
             Logger.shared.warning("[AutomaticRecordingSession] Session already active")
             return
         }
 
-        // Start a clean session state on every connect. Reconnects are common and we must not
-        // carry calibration/baseline across sessions, or event detection will jump states.
+        startFreshSession()
+    }
+
+    /// Called when BLE device disconnects — pauses for reconnect; ends session if pause window expires.
+    public func onDeviceDisconnected() {
+        guard isSessionActive, !isSessionPaused else { return }
+        pauseSession()
+    }
+
+    /// Update worn state from firmware status characteristic (3A0FF009).
+    public func updateFirmwareWornState(_ worn: Bool) {
+        firmwareReportsWorn = worn
+    }
+
+    private func startFreshSession() {
         stateDetector.fullReset()
 
         isSessionActive = true
+        isSessionPaused = false
+        pausedAt = nil
+        firmwareReportsWorn = true
         sessionStartTime = Date()
         eventCount = 0
         totalEventsRecorded = 0
@@ -144,31 +176,39 @@ public class AutomaticRecordingSession: ObservableObject {
         lastRecordedTemporalisTimestamp = nil
         pendingEvents.removeAll()
 
-        // Record initial DataStreaming state
         currentState = .dataStreaming
         recordCurrentState(at: sessionStartTime)
 
-        // Start auto-save timer
         startAutoSaveTimer()
-
-        // Cleanup old files
         fileManager.cleanupOldFiles()
 
         Logger.shared.info("[AutomaticRecordingSession] Session started")
         onSessionStarted?()
     }
 
-    /// Called when BLE device disconnects
-    public func onDeviceDisconnected() {
+    private func pauseSession() {
+        stopAutoSaveTimer()
+        savePendingEvents()
+        isSessionPaused = true
+        pausedAt = Date()
+        Logger.shared.info("[AutomaticRecordingSession] Session paused (awaiting reconnect)")
+    }
+
+    private func resumeSession() {
+        isSessionPaused = false
+        pausedAt = nil
+        startAutoSaveTimer()
+        recordCurrentState(at: Date())
+        Logger.shared.info("[AutomaticRecordingSession] Session resumed after reconnect")
+    }
+
+    /// End session explicitly (pause window expired or user disconnect).
+    public func endSession() {
         guard isSessionActive else { return }
 
-        // Stop auto-save timer
         stopAutoSaveTimer()
-
-        // Save any pending events
         savePendingEvents()
 
-        // Trigger CloudKit sync if enabled
         if syncOnDisconnect {
             Logger.shared.info("[AutomaticRecordingSession] Triggering CloudKit sync")
             onSyncRequested?()
@@ -176,9 +216,10 @@ public class AutomaticRecordingSession: ObservableObject {
 
         let finalEventCount = eventCount
         isSessionActive = false
+        isSessionPaused = false
+        pausedAt = nil
         sessionStartTime = nil
 
-        // Full reset (includes calibration) to avoid leaking baseline across reconnect sessions.
         stateDetector.fullReset()
         currentState = .dataStreaming
         isCalibrated = false
@@ -187,9 +228,18 @@ public class AutomaticRecordingSession: ObservableObject {
         totalEventsRecorded = 0
         lastRecordedTemporalisState = nil
         lastRecordedTemporalisTimestamp = nil
+        firmwareReportsWorn = true
 
         Logger.shared.info("[AutomaticRecordingSession] Session stopped: \(finalEventCount) events recorded")
         onSessionStopped?(finalEventCount)
+    }
+
+    /// Call periodically while disconnected; ends session if pause window elapsed.
+    public func endSessionIfPauseExpired() {
+        guard isSessionActive, isSessionPaused, let pausedAt else { return }
+        if Date().timeIntervalSince(pausedAt) >= resumeWithinSeconds {
+            endSession()
+        }
     }
 
     // MARK: - Sensor Data Processing
@@ -209,7 +259,12 @@ public class AutomaticRecordingSession: ObservableObject {
         batteryMV: Int? = nil,
         temporalisState: TemporalisState? = nil
     ) {
-        guard isSessionActive else { return }
+        guard isSessionActive, !isSessionPaused else { return }
+
+        // Off-body (firmware worn-gate): skip inference until device is on cheek.
+        if !firmwareReportsWorn {
+            return
+        }
 
         lastSensorTimestamp = timestamp
 
@@ -271,7 +326,7 @@ public class AutomaticRecordingSession: ObservableObject {
         Logger.shared.info("[AutomaticRecordingSession] State: \(previousState.rawValue) → \(newState.rawValue)")
 
         // Auto-start calibration when positioned (if not already calibrated)
-        if newState == .positioned && !isCalibrated {
+        if newState == .positioned && !isCalibrated && !skipCalibration {
             startCalibration()
         }
     }
