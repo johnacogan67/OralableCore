@@ -340,19 +340,11 @@ extension PPGNormalizationService {
         return redRatio / irRatio
     }
 
-    /// Estimate SpO2 from R ratio using empirical calibration curve
-    /// SpO2 = 110 - 25 * R (simplified linear approximation)
-    /// - Parameter rRatio: R ratio from calculateRRatio
-    /// - Returns: Estimated SpO2 percentage (clamped to 70-100%)
+    /// Estimate SpO2 from R ratio — Mac Protocol A linear curve.
+    /// SpO2 = clip(110 - 25 * R, 60, 100)
     public func estimateSpO2(rRatio: Double) -> Double {
         guard rRatio > 0 else { return 0 }
-
-        // Empirical calibration curve (simplified)
-        // Real devices use device-specific calibration tables
-        let spo2 = 110.0 - 25.0 * rRatio
-
-        // Clamp to physiological range
-        return min(100.0, max(70.0, spo2))
+        return SpO2Service.rRatioToSpO2ProtocolA(rRatio)
     }
 }
 

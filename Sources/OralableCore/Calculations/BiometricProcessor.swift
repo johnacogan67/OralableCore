@@ -34,6 +34,11 @@ public actor BiometricProcessor {
     private var redBuffer: [Double]
     private var greenBuffer: [Double]
     private var accelMagnitudeBuffer: [Double]
+    /// Mac Protocol A SpO2 prep streams (LP 0.8 DC + BP 0.5–8 AC).
+    private var redDCBuffer: [Double] = []
+    private var irDCBuffer: [Double] = []
+    private var redACSpO2Buffer: [Double] = []
+    private var irACSpO2Buffer: [Double] = []
 
     // MARK: - Filter State (for real-time processing)
 
@@ -41,6 +46,11 @@ public actor BiometricProcessor {
     private var irHighPass: Double = 0
     private var greenLowPass: Double = 0
     private var greenHighPass: Double = 0
+
+    private let redDCFilter = TransferFunctionFilter.irDCLowpass()
+    private let irDCFilter = TransferFunctionFilter.irDCLowpass()
+    private let redACSpO2Filter = TransferFunctionFilter.hrBandpass()
+    private let irACSpO2Filter = TransferFunctionFilter.hrBandpass()
 
     // MARK: - Baseline State
 
@@ -81,6 +91,7 @@ public actor BiometricProcessor {
     ///   - accelX: Accelerometer X (raw, ~16384 = 1g)
     ///   - accelY: Accelerometer Y (raw)
     ///   - accelZ: Accelerometer Z (raw)
+    ///   - temperatureC: Optional skin temperature (°C) for soft corroboration
     /// - Returns: BiometricResult with all calculated values
     public func process(
         ir: Double,
@@ -88,7 +99,8 @@ public actor BiometricProcessor {
         green: Double,
         accelX: Double,
         accelY: Double,
-        accelZ: Double
+        accelZ: Double,
+        temperatureC: Double? = nil
     ) -> BiometricResult {
 
         // Stage 1: Motion detection
@@ -102,8 +114,15 @@ public actor BiometricProcessor {
         // Stage 3: Activity classification
         let activity = activityClassifier.classify(ir: compensatedIR, accMagnitude: motionLevel + 1.0)
 
-        // Stage 4: Update buffers with filtered values
-        updateBuffers(ir: compensatedIR, red: compensatedRed, green: compensatedGreen, motion: motionLevel)
+        // Stage 4: Update buffers (HR on compensated; SpO2 prep on raw Mac path)
+        updateBuffers(
+            ir: compensatedIR,
+            red: compensatedRed,
+            green: compensatedGreen,
+            motion: motionLevel,
+            redRaw: red,
+            irRaw: ir
+        )
 
         // Stage 5: Check if we have enough data
         guard irBuffer.count >= config.hrWindowSize else {
@@ -135,18 +154,26 @@ public actor BiometricProcessor {
             (heartRate, heartRateQuality, heartRateSource) = calculateHeartRate()
         }
 
-        // Stage 8: Calculate SpO2 (skip if too much motion or weak signal)
+        // Stage 8: SpO2 — Mac Protocol A parity: compute whenever window is full
+        // (no perfusion / motion gate; missing values stay 0, never fake 98%).
         var spo2 = 0.0
         var spo2Quality = 0.0
+        (spo2, spo2Quality) = calculateSpO2()
 
-        if activity != .motion && signalStrength != .none && signalStrength != .weak {
-            (spo2, spo2Quality) = calculateSpO2()
-        }
+        // Soft ACC + skin-temp corroboration: quality / isWorn only (not SpO2/HR numbers).
+        let qualityMul = SensorCorroboration.vitalsQualityMultiplier(
+            temperatureC: temperatureC,
+            motionLevel: motionLevel,
+            motionThreshold: config.motionThresholdG
+        )
+        heartRateQuality *= qualityMul
+        spo2Quality *= qualityMul
 
         // Stage 9: Determine worn status
         let isWorn = perfusionIndex > config.minPerfusionIndex &&
                      heartRate > 0 &&
-                     heartRateQuality > config.minHRQuality
+                     heartRateQuality > config.minHRQuality &&
+                     SensorCorroboration.isLikelyOnSkin(temperatureC: temperatureC)
 
         return BiometricResult(
             heartRate: heartRate,
@@ -180,7 +207,8 @@ public actor BiometricProcessor {
         greenSamples: [Double],
         accelX: [Double],
         accelY: [Double],
-        accelZ: [Double]
+        accelZ: [Double],
+        temperatureC: Double? = nil
     ) -> BiometricResult {
 
         // Reset state for batch processing
@@ -198,7 +226,8 @@ public actor BiometricProcessor {
                 green: greenSamples[i],
                 accelX: accelX[i],
                 accelY: accelY[i],
-                accelZ: accelZ[i]
+                accelZ: accelZ[i],
+                temperatureC: temperatureC
             )
         }
 
@@ -226,6 +255,10 @@ public actor BiometricProcessor {
         redBuffer.removeAll(keepingCapacity: true)
         greenBuffer.removeAll(keepingCapacity: true)
         accelMagnitudeBuffer.removeAll(keepingCapacity: true)
+        redDCBuffer.removeAll(keepingCapacity: true)
+        irDCBuffer.removeAll(keepingCapacity: true)
+        redACSpO2Buffer.removeAll(keepingCapacity: true)
+        irACSpO2Buffer.removeAll(keepingCapacity: true)
 
         irLowPass = 0
         irHighPass = 0
@@ -234,6 +267,10 @@ public actor BiometricProcessor {
         irBaseline = 0
         isBaselineInitialized = false
 
+        redDCFilter.reset()
+        irDCFilter.reset()
+        redACSpO2Filter.reset()
+        irACSpO2Filter.reset()
         motionCompensator.reset()
         activityClassifier.reset()
     }
@@ -267,7 +304,14 @@ public actor BiometricProcessor {
 
     // MARK: - Private: Buffer Management
 
-    private func updateBuffers(ir: Double, red: Double, green: Double, motion: Double) {
+    private func updateBuffers(
+        ir: Double,
+        red: Double,
+        green: Double,
+        motion: Double,
+        redRaw: Double,
+        irRaw: Double
+    ) {
         // Apply bandpass filtering for IR
         let previousIR = irBuffer.last ?? ir
         irHighPass = config.alphaHP * (irHighPass + ir - previousIR)
@@ -280,9 +324,15 @@ public actor BiometricProcessor {
 
         // Append filtered values
         irBuffer.append(irLowPass)
-        redBuffer.append(red)  // Red uses raw for SpO2 AC/DC calculation
+        redBuffer.append(red)
         greenBuffer.append(greenLowPass)
         accelMagnitudeBuffer.append(motion)
+
+        // Mac Protocol A SpO2 prep (causal streaming)
+        redDCBuffer.append(redDCFilter.processSample(redRaw))
+        irDCBuffer.append(irDCFilter.processSample(irRaw))
+        redACSpO2Buffer.append(redACSpO2Filter.processSample(redRaw))
+        irACSpO2Buffer.append(irACSpO2Filter.processSample(irRaw))
 
         // Trim to window size
         if irBuffer.count > config.hrWindowSize {
@@ -291,6 +341,11 @@ public actor BiometricProcessor {
             greenBuffer.removeFirst()
             accelMagnitudeBuffer.removeFirst()
         }
+        let spo2Cap = config.spo2WindowSize
+        while redDCBuffer.count > spo2Cap { redDCBuffer.removeFirst() }
+        while irDCBuffer.count > spo2Cap { irDCBuffer.removeFirst() }
+        while redACSpO2Buffer.count > spo2Cap { redACSpO2Buffer.removeFirst() }
+        while irACSpO2Buffer.count > spo2Cap { irACSpO2Buffer.removeFirst() }
     }
 
     // MARK: - Private: Perfusion Index
@@ -399,45 +454,19 @@ public actor BiometricProcessor {
     // MARK: - Private: SpO2 Calculation
 
     private func calculateSpO2() -> (spo2: Double, quality: Double) {
-        guard redBuffer.count >= config.spo2WindowSize,
-              irBuffer.count >= config.spo2WindowSize else {
+        let n = config.spo2WindowSize
+        guard redDCBuffer.count >= n,
+              irDCBuffer.count >= n,
+              redACSpO2Buffer.count >= n,
+              irACSpO2Buffer.count >= n else {
             return (0, 0)
         }
-
-        // DC components (mean)
-        let dcRed = redBuffer.reduce(0, +) / Double(redBuffer.count)
-        let dcIR = irBuffer.reduce(0, +) / Double(irBuffer.count)
-
-        guard dcRed > 0, dcIR > 0 else { return (0, 0) }
-
-        // AC components (peak-to-peak)
-        let acRed = (redBuffer.max() ?? 0) - (redBuffer.min() ?? 0)
-        let acIR = (irBuffer.max() ?? 0) - (irBuffer.min() ?? 0)
-
-        guard acRed > 0, acIR > 0 else { return (0, 0) }
-
-        // R value (ratio of ratios)
-        let ratioRed = acRed / dcRed
-        let ratioIR = acIR / dcIR
-
-        guard ratioIR > 0 else { return (0, 0) }
-
-        let rValue = ratioRed / ratioIR
-
-        // Empirical calibration curve
-        // SpO2 = -45.060 * R^2 + 30.354 * R + 94.845
-        let spo2 = -45.060 * pow(rValue, 2) + 30.354 * rValue + 94.845
-
-        // Validate range
-        guard spo2 >= config.minSpO2, spo2 <= config.maxSpO2 else { return (0, 0) }
-
-        // Calculate quality from SNR
-        let snrRed = ratioRed
-        let snrIR = ratioIR
-        let avgSNR = (snrRed + snrIR) / 2.0
-        let quality = min(1.0, avgSNR / 0.1)
-
-        return (round(spo2 * 10) / 10, max(0, min(1.0, quality)))
+        return SpO2Service.protocolASpO2(
+            redDCSamples: Array(redDCBuffer.suffix(n)),
+            redACSamples: Array(redACSpO2Buffer.suffix(n)),
+            irDCSamples: Array(irDCBuffer.suffix(n)),
+            irACSamples: Array(irACSpO2Buffer.suffix(n))
+        )
     }
 
     // MARK: - Temporalis Fatigue Index

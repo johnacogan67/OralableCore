@@ -2,7 +2,7 @@
 //  InferenceManagerTests.swift
 //  OralableCoreTests
 //
-//  Temporalis buffer: 50×6 tensor, stride 50 (one inference per second @ 50 Hz).
+//  Temporalis buffer: 50×6 tensor, stride 25 (Mac train default / algorithm_spec.yaml).
 //
 
 import XCTest
@@ -44,7 +44,8 @@ final class InferenceManagerTests: XCTestCase {
         // Allow async dispatch + Task scheduling to complete on CI / loaded machines.
         try? await Task.sleep(nanoseconds: 400_000_000)
 
-        XCTAssertEqual(classifier.invocationCount, 6, "Expected 6 inferences for 300 samples (50 Hz stride, 50-sample window)")
+        // First at sample 50, then every 25 → 50,75,...,300 = 11
+        XCTAssertEqual(classifier.invocationCount, 11, "Expected 11 inferences for 300 samples (stride 25, window 50)")
     }
 
     func testNoClassificationBeforeFiftySamples() async {

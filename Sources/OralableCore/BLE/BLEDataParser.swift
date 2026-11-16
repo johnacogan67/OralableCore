@@ -15,6 +15,7 @@
 //  - Accel (3A0FF002): 4-byte frame_counter + N×6 bytes (X, Y, Z per sample)
 //  - Temp (3A0FF003): 4-byte frame_counter + 2-byte centidegrees
 //  - Battery (3A0FF004): 4-byte millivolts
+//  - Battery usage (3A0FF00D, FW >= 1.0.86): 8 bytes, model estimate
 //
 
 import Foundation
@@ -22,6 +23,49 @@ import Foundation
 // MARK: - PPG Packet Result
 
 /// Result of parsing a PPG packet
+/// Model of charge used since the clip left the case. Not a fuel-gauge measurement.
+public struct BatteryUsageEstimate: Sendable, Equatable {
+    public let voltageMillivolts: Int
+    public let gaugePercent: Int
+    public let milliampHoursUsed: Double
+    /// Nil while the clip is on the case, or before a budget is latched.
+    public let minutesRemaining: Int?
+    public let isModelEstimate: Bool
+    public let onCharger: Bool
+
+    public init(
+        voltageMillivolts: Int,
+        gaugePercent: Int,
+        milliampHoursUsed: Double,
+        minutesRemaining: Int?,
+        isModelEstimate: Bool,
+        onCharger: Bool
+    ) {
+        self.voltageMillivolts = voltageMillivolts
+        self.gaugePercent = gaugePercent
+        self.milliampHoursUsed = milliampHoursUsed
+        self.minutesRemaining = minutesRemaining
+        self.isModelEstimate = isModelEstimate
+        self.onCharger = onCharger
+    }
+
+    public var summary: String {
+        let used = String(format: "%.2f mAh used", milliampHoursUsed)
+        if onCharger {
+            return "On charger · \(used) · estimate"
+        }
+        guard let minutesRemaining else {
+            return "\(used) · estimate"
+        }
+        let hours = minutesRemaining / 60
+        let mins = minutesRemaining % 60
+        if hours > 0 {
+            return "About \(hours) h \(mins) min left · \(used)"
+        }
+        return "About \(mins) min left · \(used)"
+    }
+}
+
 public struct PPGPacketResult: Sendable {
     /// Frame counter from packet header
     public let frameCounter: UInt32
@@ -97,13 +141,13 @@ public struct BLEDataParser: Sendable {
     /// PPG sample rate in Hz
     public static let ppgSampleRate: Double = 50.0
     
-    /// Accelerometer sample rate in Hz
-    public static let accelSampleRate: Double = 100.0
+    /// Accelerometer sample rate in Hz. LIS2DTW12 CTRL1 0x43 is 50 Hz.
+    public static let accelSampleRate: Double = 50.0
     
     /// Sample interval for PPG in seconds (20ms)
     public static let ppgSampleInterval: Double = 1.0 / ppgSampleRate
     
-    /// Sample interval for accelerometer in seconds (10ms)
+    /// Sample interval for accelerometer in seconds (20ms)
     public static let accelSampleInterval: Double = 1.0 / accelSampleRate
     
     // MARK: - Frame Counter
@@ -417,6 +461,28 @@ public struct BLEDataParser: Sendable {
         let level = Int(data[0])
         guard level >= 0 && level <= 100 else { return nil }
         return level
+    }
+
+    /// Parse `3A0FF00D` (firmware 1.0.86+). Eight little-endian bytes.
+    /// Minutes `0xFFFF` means the clip is on the case, or the budget is not latched yet.
+    public static func parseBatteryUsage(_ data: Data) -> BatteryUsageEstimate? {
+        guard data.count >= BLEConstants.TGM.PacketSize.batteryUsage else { return nil }
+        let bytes = [UInt8](data.prefix(8))
+        let millivolts = Int(bytes[0]) | (Int(bytes[1]) << 8)
+        guard millivolts == 0 || (millivolts >= 2000 && millivolts <= 5000) else { return nil }
+        let gauge = Int(bytes[2])
+        guard gauge <= 100 else { return nil }
+        let flags = bytes[3]
+        let mahX100 = Int(bytes[4]) | (Int(bytes[5]) << 8)
+        let minutesRaw = Int(bytes[6]) | (Int(bytes[7]) << 8)
+        return BatteryUsageEstimate(
+            voltageMillivolts: millivolts,
+            gaugePercent: gauge,
+            milliampHoursUsed: Double(mahX100) / 100.0,
+            minutesRemaining: minutesRaw == 0xFFFF ? nil : minutesRaw,
+            isModelEstimate: (flags & 0x01) != 0,
+            onCharger: (flags & 0x02) != 0
+        )
     }
 
     // MARK: - Device Status Parsing (3A0FF009)

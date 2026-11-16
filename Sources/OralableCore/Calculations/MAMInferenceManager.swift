@@ -91,6 +91,14 @@ public final class CoreMLTemporalisClassifier: TemporalisClassifier, @unchecked 
 
     public init() {
         do {
+            guard Self.hasApprovedBundledProvenance() else {
+                Logger.shared.warning(
+                    "[Temporalis] Refusing bundled model without approved non-stub provenance; " +
+                    "use a reviewed user-holdout export before enabling inference."
+                )
+                self.model = nil
+                return
+            }
             guard let url = Self.resolveModelURL() else {
                 Logger.shared.warning("[Temporalis] BruxismMAM_Temporalis model not found in package/app bundles")
                 self.model = nil
@@ -104,6 +112,25 @@ public final class CoreMLTemporalisClassifier: TemporalisClassifier, @unchecked 
             Logger.shared.warning("[Temporalis] Failed to load model: \(error)")
             self.model = nil
         }
+    }
+
+    /// Production inference is permitted only when the resource sidecar explicitly
+    /// records a reviewed, non-stub, release-eligible artifact. Unknown/legacy
+    /// records deliberately fail closed rather than silently loading a placeholder.
+    private static func hasApprovedBundledProvenance() -> Bool {
+        let bundles = [Bundle.module, Bundle.main] + Bundle.allBundles + Bundle.allFrameworks
+        for bundle in bundles {
+            guard let url = bundle.url(forResource: "\(modelName).provenance", withExtension: "json"),
+                  let data = try? Data(contentsOf: url),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  let root = object as? [String: Any],
+                  let lifecycle = root["lifecycle"] as? [String: Any] else {
+                continue
+            }
+            return lifecycle["release_eligible"] as? Bool == true
+                && lifecycle["stub_model"] as? Bool == false
+        }
+        return false
     }
 
     private static func resolveModelURL() -> URL? {
@@ -245,7 +272,8 @@ public struct ClassificationBuffer: Sendable {
     private var accelZ: [Double]
 
     public static let windowSize: Int = 50
-    public static let strideSize: Int = 50
+    /// Matches Mac / `generate_mam_model.py` training default stride (algorithm_spec.yaml).
+    public static let strideSize: Int = 25
     public static let historySize: Int = 250
     private static let zScoreEpsilon: Double = 1e-5
     private static let zScoreClamp: ClosedRange<Double> = -5.0...5.0
@@ -311,16 +339,14 @@ public struct ClassificationBuffer: Sendable {
         guard let array = try? MLMultiArray(shape: shape, dataType: .float32) else {
             return nil
         }
+        // Raw scale matches Mac training (`generate_mam_model.py` BatchNorm path).
+        // Do not z-score IR/accel here — that was a phone-only divergence.
         let g = Array(greenAC.suffix(Self.windowSize))
-        let irRaw = Array(irDC.suffix(Self.windowSize))
+        let ir = Array(irDC.suffix(Self.windowSize))
         let r = Array(redAC.suffix(Self.windowSize))
-        let axRaw = Array(accelX.suffix(Self.windowSize))
-        let ayRaw = Array(accelY.suffix(Self.windowSize))
-        let azRaw = Array(accelZ.suffix(Self.windowSize))
-        let ir = Self.zScoreNormalized(irRaw)
-        let ax = Self.zScoreNormalized(axRaw)
-        let ay = Self.zScoreNormalized(ayRaw)
-        let az = Self.zScoreNormalized(azRaw)
+        let ax = Array(accelX.suffix(Self.windowSize))
+        let ay = Array(accelY.suffix(Self.windowSize))
+        let az = Array(accelZ.suffix(Self.windowSize))
         for t in 0..<Self.windowSize {
             array[[0, t, 0] as [NSNumber]] = NSNumber(value: Float(g[t]))
             array[[0, t, 1] as [NSNumber]] = NSNumber(value: Float(ir[t]))
@@ -402,8 +428,10 @@ public struct ClassificationBuffer: Sendable {
     }
 
     private static func sanitizeSpO2(_ value: Double?) -> Double {
+        // Do not invent a healthy 98% placeholder — log NaN when unavailable
+        // so phone diagnostics match Mac Protocol A (NaN / missing SpO2).
         guard let value, value.isFinite, !value.isNaN, value > 0 else {
-            return 98.0
+            return .nan
         }
         return value
     }
@@ -519,10 +547,9 @@ public final class MAMInferenceManager: @unchecked Sendable {
     }
 
     public func updateSpO2Estimate(_ spo2: Double?) {
+        // Keep last valid estimate; never fabricate 98.0 when calculation fails.
         if let spo2, spo2.isFinite, !spo2.isNaN, spo2 > 0 {
             latestSpO2Estimate = spo2
-        } else {
-            latestSpO2Estimate = 98.0
         }
     }
 
@@ -582,7 +609,10 @@ public final class MAMInferenceManager: @unchecked Sendable {
         let now = Date()
         let shouldEmitWarnings = warmupUntil == nil || now >= warmupUntil!
 
-        if shouldEmitWarnings, snapshot.spo2Estimate < 90 {
+        if shouldEmitWarnings,
+           snapshot.spo2Estimate.isFinite,
+           !snapshot.spo2Estimate.isNaN,
+           snapshot.spo2Estimate < 90 {
             Logger.shared.warning("[MAM_FEATURES] OOD warning: SpO2 estimate < 90 (\(String(format: "%.1f", snapshot.spo2Estimate)))")
         }
         let irNormAbsMax = max(abs(snapshot.irDCNormMin), abs(snapshot.irDCNormMax))

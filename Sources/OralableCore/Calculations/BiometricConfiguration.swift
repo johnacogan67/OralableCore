@@ -85,7 +85,7 @@ public struct BiometricConfiguration: Sendable {
         motionThresholdG: Double = 0.15,
         minBPM: Double = 40,
         maxBPM: Double = 180,
-        minSpO2: Double = 70,
+        minSpO2: Double = 60,
         maxSpO2: Double = 100,
         alphaLP: Double = 0.15,
         alphaHP: Double = 0.05
@@ -118,7 +118,7 @@ public struct BiometricConfiguration: Sendable {
         motionThresholdG: 0.15,
         minBPM: 40,
         maxBPM: 180,
-        minSpO2: 70,
+        minSpO2: 60,  // Mac Protocol A clamp floor
         maxSpO2: 100,
         alphaLP: 0.15,
         alphaHP: 0.05
@@ -135,7 +135,7 @@ public struct BiometricConfiguration: Sendable {
         motionThresholdG: 0.15,
         minBPM: 40,
         maxBPM: 180,
-        minSpO2: 70,
+        minSpO2: 60,  // Mac Protocol A clamp floor
         maxSpO2: 100,
         alphaLP: 0.15,
         alphaHP: 0.05

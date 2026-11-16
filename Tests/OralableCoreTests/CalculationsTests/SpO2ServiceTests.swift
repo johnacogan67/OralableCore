@@ -618,6 +618,34 @@ final class SpO2UtilityTests: XCTestCase {
         XCTAssertLessThan(spo2_10, 95)
     }
 
+    // MARK: - Mac Protocol A linear calibration
+
+    func testProtocolARRatioToSpO2KnownValues() {
+        // SpO2 = 110 - 25*R, clamp 60...100 (ClinicalBiometricSuite)
+        XCTAssertEqual(SpO2Service.rRatioToSpO2ProtocolA(0.48), 98.0, accuracy: 0.01)
+        XCTAssertEqual(SpO2Service.rRatioToSpO2ProtocolA(1.0), 85.0, accuracy: 0.01)
+        XCTAssertEqual(SpO2Service.rRatioToSpO2ProtocolA(0.0), 100.0, accuracy: 0.01)
+        XCTAssertEqual(SpO2Service.rRatioToSpO2ProtocolA(3.0), 60.0, accuracy: 0.01)
+    }
+
+    func testProtocolASpO2FromACDCWindows() {
+        // Constant DC with AC RMS ratio that yields R ≈ 0.48 → SpO2 ≈ 98
+        let n = 150
+        let redDC = Array(repeating: 100_000.0, count: n)
+        let irDC = Array(repeating: 100_000.0, count: n)
+        // red AC amp 480, ir AC amp 1000 → R = 0.48
+        let redAC = (0..<n).map { i in 480.0 * sin(Double(i) * 2.0 * .pi / 25.0) }
+        let irAC = (0..<n).map { i in 1000.0 * sin(Double(i) * 2.0 * .pi / 25.0) }
+        let (spo2, quality) = SpO2Service.protocolASpO2(
+            redDCSamples: redDC,
+            redACSamples: redAC,
+            irDCSamples: irDC,
+            irACSamples: irAC
+        )
+        XCTAssertEqual(spo2, 98.0, accuracy: 1.0)
+        XCTAssertGreaterThan(quality, 0)
+    }
+
     // MARK: - SpO2 to R Ratio Tests
 
     func testSpO2ToRRatioNormal() {

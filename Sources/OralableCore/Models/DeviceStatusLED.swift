@@ -15,6 +15,9 @@ public enum DeviceStatusLEDColor: String, Sendable, Equatable {
 }
 
 /// Solid, flashing, or off (worn / PPG sensing).
+///
+/// Firmware hold on the pad is a rare green pulse (not a continuous LED).
+/// The app still uses `.solid` for that "charged / hold" meaning.
 public enum DeviceStatusLEDPattern: String, Sendable, Equatable {
     case solid
     case flashing
@@ -42,77 +45,74 @@ public struct DeviceStatusLEDRepresentation: Sendable, Equatable {
 }
 
 public enum DeviceStatusLEDPolicy {
-    /// Matches `BATTERY_LED_FULL_THRESHOLD_PCT` in firmware.
+    /// Matches `BATTERY_LED_FULL_THRESHOLD_PCT` in firmware (on-pad SOC clamp).
     public static let fullThresholdPercent: UInt8 = 80
-    /// Matches `BATTERY_TRULY_FULL_MV` in firmware.
+    /// Matches `BATTERY_LED_HOLD_GREEN_PCT` — enter hold LED (~4.20 V).
+    public static let holdGreenPercent: UInt8 = 80
+    /// Matches `BATTERY_LED_HOLD_GREEN_MV`.
+    public static let holdGreenMillivolts: Int32 = 4200
+    /// Matches `BATTERY_LED_HOLD_GREEN_EXIT_PCT` (firmware hysteresis).
+    public static let holdGreenExitPercent: UInt8 = 75
+    /// Matches `BATTERY_LED_HOLD_GREEN_EXIT_MV`.
+    public static let holdGreenExitMillivolts: Int32 = 4150
+    /// Legacy Vmax gate; not used for status LEDs.
     public static let trulyFullMillivolts: Int32 = 4320
 }
 
 public extension TGMDeviceStatus {
     /// Mirror firmware `battery_led_indicator_apply()` using status notify fields.
     ///
-    /// FW ≥ 1.0.70 on-dock LEDs follow `chargeActive` (STAT blink → flash; taper → solid).
-    /// Off-dock green still uses optional Vmax for solid-vs-flash when pct > 80%.
+    /// Status LEDs are green-only (never red). FW ≥ 1.0.71: no status LED while BLE
+    /// is connected (optics are PPG-only). Disconnected on-dock: flash green while
+    /// below hold SOC/voltage (charging or early STAT taper). Hold (app `.solid`,
+    /// clip: rare green pulse) only when SOC/voltage is in hold. STAT taper alone
+    /// is not full.
+    /// FW ≥ 1.0.72: off-dock and placement mode 2 stay dark.
     ///
     /// - Parameters:
     ///   - userPlacementMode: App placement override (0=auto, 1=charger, 2=idle, 3=worn).
-    ///   - batteryMillivolts: Optional GATT battery mV for off-dock solid green when pct > 80%.
+    ///   - batteryMillivolts: Used to enter hold at/above hold voltage.
+    ///   - bleConnected: True when a central is linked — status LED off on the MAM.
     func statusLED(
         userPlacementMode: UInt8 = 0,
-        batteryMillivolts: Int32? = nil
+        batteryMillivolts: Int32? = nil,
+        bleConnected: Bool = false
     ) -> DeviceStatusLEDRepresentation {
-        if worn || userPlacementMode == 3 {
+        if bleConnected {
             return DeviceStatusLEDRepresentation(
                 color: .none,
                 pattern: .off,
                 accessibilityLabel: "Status LED off",
-                detail: "On body — PPG sensing active."
+                detail: "Connected — no status LED. Optical LEDs are PPG-only."
             )
         }
 
-        let onDockEffective = userPlacementMode == 1 || onDock
-        let trulyFull: Bool
-        if let batteryMillivolts {
-            trulyFull = batteryMillivolts >= DeviceStatusLEDPolicy.trulyFullMillivolts
-        } else {
-            trulyFull = false
-        }
-        let full = batteryPercent > DeviceStatusLEDPolicy.fullThresholdPercent && trulyFull
+        let onDockEffective = userPlacementMode == 1 || (userPlacementMode != 2 && onDock)
 
         if onDockEffective {
-            // FW >= 1.0.70: LTC4124 STAT blink → flash red; STAT taper → solid red.
-            if chargeActive {
+            let holdByPercent = batteryPercent >= DeviceStatusLEDPolicy.holdGreenPercent
+            let holdByVoltage = (batteryMillivolts ?? 0) >= DeviceStatusLEDPolicy.holdGreenMillivolts
+            if holdByPercent || holdByVoltage {
                 return DeviceStatusLEDRepresentation(
-                    color: .red,
-                    pattern: .flashing,
-                    accessibilityLabel: "Flashing red status LED",
-                    detail: "On charger — charging (STAT blink)."
+                    color: .green,
+                    pattern: .solid,
+                    accessibilityLabel: "Hold green status LED",
+                    detail: "On Oralable case — hold (brief green pulse; cell in hold range)."
                 )
             }
             return DeviceStatusLEDRepresentation(
-                color: .red,
-                pattern: .solid,
-                accessibilityLabel: "Solid red status LED",
-                detail: full
-                    ? "On charger — charge hold / full."
-                    : "On charger — charge taper (STAT steady)."
-            )
-        }
-
-        if full {
-            return DeviceStatusLEDRepresentation(
                 color: .green,
-                pattern: .solid,
-                accessibilityLabel: "Solid green status LED",
-                detail: "Off charger — battery full."
+                pattern: .flashing,
+                accessibilityLabel: "Flashing green status LED",
+                detail: "On Oralable case — charging, or taper below hold voltage."
             )
         }
 
         return DeviceStatusLEDRepresentation(
-            color: .green,
-            pattern: .flashing,
-            accessibilityLabel: "Flashing green status LED",
-            detail: "Off charger — below full."
+            color: .none,
+            pattern: .off,
+            accessibilityLabel: "Status LED off",
+            detail: "Off case — no status LED."
         )
     }
 }

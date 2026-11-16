@@ -28,13 +28,13 @@ public enum AlgorithmSpec {
     /// PPG sample rate in Hz
     public static let ppgSampleRate: Double = 50.0
     
-    /// Accelerometer sample rate in Hz
-    public static let accelSampleRate: Double = 100.0
+    /// Accelerometer sample rate in Hz. Matches LIS2DTW12 CTRL1 0x43 (50 Hz).
+    public static let accelSampleRate: Double = 50.0
     
     /// Sample interval for PPG in seconds (20ms)
     public static let ppgSampleInterval: Double = 1.0 / ppgSampleRate
     
-    /// Sample interval for accelerometer in seconds (10ms)
+    /// Sample interval for accelerometer in seconds (20ms)
     public static let accelSampleInterval: Double = 1.0 / accelSampleRate
     
     // MARK: - Packet Sizes (from oralable_nrf tgm_service.h)
@@ -162,4 +162,32 @@ public enum AlgorithmSpec {
     
     /// Minimum signal buffer for HR calculation (seconds)
     public static let minSignalBufferSeconds: Double = 3.0
+
+    // MARK: - SpO2 (Mac Protocol A / ClinicalBiometricSuite)
+    // Source: cursor_oralable/src/config/algorithm_spec.yaml
+
+    /// Linear calibration: SpO2 = clip(110 - 25*R, clampMin…clampMax)
+    public static let spo2UsesLinearProtocolA: Bool = true
+    public static let spo2Intercept: Double = 110.0
+    public static let spo2RatioCoefficient: Double = 25.0
+    public static let spo2ClampMin: Double = 60.0
+    public static let spo2ClampMax: Double = 100.0
+    public static let spo2WindowSeconds: Double = 3.0
+
+    // MARK: - Airway rescue (sample-level ClinicalBiometricSuite)
+
+    public static let airwayRescueWindowMs: Double = 500.0
+    public static let airwayRescueDropThreshold: Double = -0.10
+
+    // MARK: - SASHB
+
+    public static let sashbSpO2Threshold: Double = 90.0
+    public static let sashbDtSeconds: Double = 0.02
+
+    // MARK: - MAM
+
+    public static let mamWindowSamples: Int = 50
+    public static let mamStrideSamples: Int = 25
+    /// Product quiet-gate (classification only) — see ALGORITHM_ARCHITECTURE exceptions.
+    public static let mamActivityGateShiftPercent: Double = 10.0
 }

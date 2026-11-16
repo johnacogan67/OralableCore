@@ -290,7 +290,7 @@ public actor SpO2Service {
         switch calibrationCurve {
         case .linear:
             // SpO2 = 110 - 25 * R
-            return 110.0 - 25.0 * rRatio
+            return AlgorithmSpec.spo2Intercept - AlgorithmSpec.spo2RatioCoefficient * rRatio
 
         case .quadratic:
             // SpO2 = -45.060 * R^2 + 30.354 * R + 94.845
@@ -417,12 +417,155 @@ extension SpO2Service {
         return max(70, min(100, spo2))
     }
 
+    /// Mac Protocol A / `ClinicalBiometricSuite` linear calibration:
+    /// `SpO2 = clip(110 - 25*R, 60, 100)`.
+    public static func rRatioToSpO2ProtocolA(_ rRatio: Double) -> Double {
+        max(
+            AlgorithmSpec.spo2ClampMin,
+            min(
+                AlgorithmSpec.spo2ClampMax,
+                AlgorithmSpec.spo2Intercept - AlgorithmSpec.spo2RatioCoefficient * rRatio
+            )
+        )
+    }
+
+    /// Mac Protocol A SpO2 from windowed DC means and AC RMS (parity with
+    /// `src/analysis/features.py` `ClinicalBiometricSuite._compute_spo2`).
+    /// - Returns: `(spo2, quality)` where spo2 is 0 if inputs are unusable.
+    public static func protocolASpO2(
+        redDCSamples: [Double],
+        redACSamples: [Double],
+        irDCSamples: [Double],
+        irACSamples: [Double]
+    ) -> (spo2: Double, quality: Double) {
+        let n = min(
+            redDCSamples.count,
+            redACSamples.count,
+            irDCSamples.count,
+            irACSamples.count
+        )
+        guard n >= 2 else { return (0, 0) }
+
+        let redDC = Array(redDCSamples.suffix(n))
+        let redAC = Array(redACSamples.suffix(n))
+        let irDC = Array(irDCSamples.suffix(n))
+        let irAC = Array(irACSamples.suffix(n))
+
+        let dcRed = redDC.reduce(0, +) / Double(n)
+        let dcIR = irDC.reduce(0, +) / Double(n)
+        guard dcRed > 1e-9, dcIR > 1e-9 else { return (0, 0) }
+
+        let acRedRMS = rms(redAC)
+        let acIRRMS = rms(irAC)
+        guard acIRRMS > 1e-9 else { return (0, 0) }
+
+        let ratioRed = acRedRMS / dcRed
+        let ratioIR = acIRRMS / dcIR
+        guard ratioIR > 1e-9 else { return (0, 0) }
+
+        let rValue = ratioRed / ratioIR
+        guard rValue.isFinite, !rValue.isNaN else { return (0, 0) }
+
+        let spo2 = rRatioToSpO2ProtocolA(rValue)
+        let avgSNR = (ratioRed + ratioIR) / 2.0
+        let quality = min(1.0, max(0.0, avgSNR / 0.1))
+        return ((spo2 * 10).rounded() / 10, quality)
+    }
+
+    /// Offline / golden series matching Mac centered rolling window (3 s @ 50 Hz = 150).
+    /// Returns one SpO2 per sample; non-finite when RoR is undefined.
+    public static func protocolASpO2Series(
+        redDC: [Double],
+        redAC: [Double],
+        irDC: [Double],
+        irAC: [Double],
+        windowSamples: Int = Int(AlgorithmSpec.spo2WindowSeconds * AlgorithmSpec.ppgSampleRate)
+    ) -> [Double] {
+        let n = min(redDC.count, redAC.count, irDC.count, irAC.count)
+        guard n > 0, windowSamples >= 1 else { return [] }
+        var out = Array(repeating: Double.nan, count: n)
+        let half = windowSamples / 2
+        let eps = 1e-9
+        for i in 0..<n {
+            let start = max(0, i - half)
+            let end = min(n, i + half + 1)
+            let len = end - start
+            guard len >= 2 else { continue }
+            var sumRedDC = 0.0, sumIRDC = 0.0
+            var sumRedAC2 = 0.0, sumIRAC2 = 0.0
+            for j in start..<end {
+                sumRedDC += redDC[j]
+                sumIRDC += irDC[j]
+                sumRedAC2 += redAC[j] * redAC[j]
+                sumIRAC2 += irAC[j] * irAC[j]
+            }
+            let dcRed = sumRedDC / Double(len)
+            let dcIR = sumIRDC / Double(len)
+            guard dcRed > eps, dcIR > eps else { continue }
+            let acRedRMS = sqrt(sumRedAC2 / Double(len))
+            let acIRRMS = sqrt(sumIRAC2 / Double(len))
+            guard acIRRMS > eps else { continue }
+            let ratioRed = acRedRMS / dcRed
+            let ratioIR = acIRRMS / dcIR
+            guard ratioIR > eps else { continue }
+            let r = ratioRed / ratioIR
+            guard r.isFinite else { continue }
+            out[i] = rRatioToSpO2ProtocolA(r)
+        }
+        return out
+    }
+
+    /// Sample-level airway rescue — Mac `ClinicalBiometricSuite._compute_airway_rescue`.
+    public static func protocolAAirwayRescue(
+        irDC: [Double],
+        windowSamples: Int = Int(AlgorithmSpec.airwayRescueWindowMs / 1_000.0 * AlgorithmSpec.ppgSampleRate),
+        dropThreshold: Double = AlgorithmSpec.airwayRescueDropThreshold
+    ) -> [Bool] {
+        let n = irDC.count
+        var out = Array(repeating: false, count: n)
+        guard n > windowSamples, windowSamples >= 2 else { return out }
+        for i in windowSamples..<n {
+            let startVal = irDC[i - windowSamples]
+            let endVal = irDC[i]
+            guard startVal.isFinite, endVal.isFinite, startVal > 1e-9 else { continue }
+            let pct = (endVal - startVal) / startVal
+            if pct <= dropThreshold { out[i] = true }
+        }
+        return out
+    }
+
+    /// Cumulative SASHB — Mac `_compute_sashb`.
+    public static func protocolASASHB(
+        spo2: [Double],
+        threshold: Double = AlgorithmSpec.sashbSpO2Threshold,
+        dt: Double = AlgorithmSpec.sashbDtSeconds
+    ) -> [Double] {
+        var cum = Array(repeating: 0.0, count: spo2.count)
+        for i in 0..<spo2.count {
+            let s = spo2[i]
+            if s.isFinite, s < threshold {
+                cum[i] = (threshold - s) * dt
+            }
+            if i > 0 { cum[i] += cum[i - 1] }
+        }
+        return cum
+    }
+
     /// Get expected R ratio for a given SpO2 value (inverse lookup)
     /// - Parameter spo2: Target SpO2 percentage
     /// - Returns: Expected R ratio (approximate)
     public static func spO2ToRRatio(_ spo2: Double) -> Double {
         // Linear approximation for inverse lookup
         // R = (110 - SpO2) / 25
-        return (110.0 - spo2) / 25.0
+        return (AlgorithmSpec.spo2Intercept - spo2) / AlgorithmSpec.spo2RatioCoefficient
+    }
+
+    private static func rms(_ values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        var sumSquares = 0.0
+        for v in values {
+            sumSquares += v * v
+        }
+        return sqrt(sumSquares / Double(values.count))
     }
 }

@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0.0",
+  "model_name": "BruxismMAM_Temporalis",
+  "lifecycle": {
+    "status": "unverified_legacy_research_artifact",
+    "release_eligible": false,
+    "stub_model": "unknown",
+    "reason": "The checked-in artifact lacks a linked Keras source, training run, user-level holdout evidence, and release approval. It must not be represented as product-validated."
+  },
+  "artifact": {
+    "coreml_path": "Sources/OralableCore/Resources/BruxismMAM_Temporalis.mlpackage",
+    "coreml_tree_sha256": "9845ae28e39b4d69828d3309261713158b3421879f5074c0df059109c5486be7",
+    "input_shape": [1, 50, 6],
+    "class_order": ["quiet", "phasic", "tonic", "rescue"]
+  },
+  "algorithm_spec": {
+    "id": "oralable-algorithm-v1",
+    "version": "1.0.0",
+    "sha256": null,
+    "reason": "The original artifact was not linked to an immutable algorithm-spec fingerprint."
+  },
+  "dataset": {
+    "source_path": null,
+    "source_sha256": null,
+    "user_count": null,
+    "reason": "No auditable cohort manifest accompanies this legacy artifact."
+  },
+  "validation": {
+    "strategy": "not_recorded",
+    "metrics": null,
+    "user_level_holdout": "not_recorded"
+  },
+  "release_gate": {
+    "required": [
+      "linked Keras source hash",
+      "algorithm-spec fingerprint",
+      "cohort manifest with user-level identifiers",
+      "user-holdout metrics",
+      "independent release approval"
+    ],
+    "state": "blocked"
+  }
+}

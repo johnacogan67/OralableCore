@@ -10,32 +10,32 @@ import Foundation
 
 /// High-level device state for dashboard / pilot UX.
 public enum DeviceOperationalState: String, Sendable, Equatable {
-    /// On Qi pad or explicit charger mode — red status LED policy on Gen1 FW >= 1.0.63.
+    /// On Oralable case or explicit charger mode — green status LED only when BLE is down.
     case onCharger
-    /// Off body, bench / table — green status LED policy.
+    /// Off body, bench / table — green status LED only when BLE is down.
     case benchIdle
-    /// On body (temple/cheek) — status LEDs off; PPG drives sensing.
+    /// On body (temple) — status LEDs off; PPG drives sensing while linked.
     case onBody
     /// On body with sufficient PPG quality for HR / SpO2 display.
     case vitalsReady
 
     public var title: String {
         switch self {
-        case .onCharger: return "On charger"
-        case .benchIdle: return "Bench / idle"
-        case .onBody: return "On body"
-        case .vitalsReady: return "Vitals ready"
+            case .onCharger: return "On Oralable case"
+            case .benchIdle: return "Off case"
+            case .onBody: return "On temple"
+            case .vitalsReady: return "Vitals ready"
         }
     }
 
     public var detail: String {
         switch self {
         case .onCharger:
-            return "Charging or on wireless pad. Streaming suppressed."
+            return "On the Oralable case. Sensors off. Clip LED off while linked."
         case .benchIdle:
-            return "Not worn. Place on charger or set Worn before vitals."
+            return "Not worn. Place on the Oralable case or set Worn on temple."
         case .onBody:
-            return "Contact detected. Waiting for stable PPG signal."
+            return "Pad or tape on the temple. Waiting for stable PPG."
         case .vitalsReady:
             return "Heart rate and SpO2 quality sufficient for display."
         }

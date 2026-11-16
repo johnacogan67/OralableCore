@@ -18,13 +18,18 @@ final class BLEConstantsTests: XCTestCase {
 
     func testTGMServiceUUID() {
         XCTAssertEqual(BLEConstants.TGM.serviceUUID, "3A0FF000-98C4-46B2-94AF-1AEE0FD4C48E")
+        XCTAssertEqual(BLEConstants.TGM.userFacingDeviceName, "MAM")
     }
 
     func testTGMCharacteristicUUIDs() {
         XCTAssertEqual(BLEConstants.TGM.sensorDataCharUUID, "3A0FF001-98C4-46B2-94AF-1AEE0FD4C48E")
         XCTAssertEqual(BLEConstants.TGM.accelerometerCharUUID, "3A0FF002-98C4-46B2-94AF-1AEE0FD4C48E")
-        XCTAssertEqual(BLEConstants.TGM.commandCharUUID, "3A0FF003-98C4-46B2-94AF-1AEE0FD4C48E")
+        XCTAssertEqual(BLEConstants.TGM.temperatureCharUUID, "3A0FF003-98C4-46B2-94AF-1AEE0FD4C48E")
         XCTAssertEqual(BLEConstants.TGM.batteryCharUUID, "3A0FF004-98C4-46B2-94AF-1AEE0FD4C48E")
+        XCTAssertEqual(BLEConstants.TGM.firmwareLogCharUUID, "3A0FF00A-98C4-46B2-94AF-1AEE0FD4C48E")
+        XCTAssertEqual(BLEConstants.TGM.firmwareConfigCharUUID, "3A0FF00B-98C4-46B2-94AF-1AEE0FD4C48E")
+        XCTAssertEqual(BLEConstants.TGM.firmwareConfigStateCharUUID, "3A0FF00C-98C4-46B2-94AF-1AEE0FD4C48E")
+        XCTAssertEqual(BLEConstants.TGM.batteryUsageCharUUID, "3A0FF00D-98C4-46B2-94AF-1AEE0FD4C48E")
     }
 
     func testTGMAllCharacteristics() {
@@ -32,13 +37,14 @@ final class BLEConstantsTests: XCTestCase {
         XCTAssertEqual(chars.count, 5)
         XCTAssertTrue(chars.contains(BLEConstants.TGM.sensorDataCharUUID))
         XCTAssertTrue(chars.contains(BLEConstants.TGM.accelerometerCharUUID))
-        XCTAssertTrue(chars.contains(BLEConstants.TGM.commandCharUUID))
+        XCTAssertTrue(chars.contains(BLEConstants.TGM.temperatureCharUUID))
         XCTAssertTrue(chars.contains(BLEConstants.TGM.batteryCharUUID))
         XCTAssertTrue(chars.contains(BLEConstants.TGM.statusCharUUID))
     }
 
     func testTGMStatusCharUUID() {
         XCTAssertEqual(BLEConstants.TGM.statusCharUUID, "3A0FF009-98C4-46B2-94AF-1AEE0FD4C48E")
+        XCTAssertEqual(BLEConstants.TGM.PacketSize.status, 5)
     }
 
     func testParseDeviceStatusPacket() {
@@ -80,11 +86,11 @@ final class BLEConstantsTests: XCTestCase {
             batteryPercent: 65
         )
         let led = status.statusLED(userPlacementMode: 1)
-        XCTAssertEqual(led.color, .red)
+        XCTAssertEqual(led.color, .green)
         XCTAssertEqual(led.pattern, .flashing)
     }
 
-    func testStatusLEDMirrorOnBodyOff() {
+    func testStatusLEDMirrorOnBodyOffWhenConnected() {
         let status = TGMDeviceStatus(
             onDock: false,
             chargeActive: false,
@@ -92,12 +98,25 @@ final class BLEConstantsTests: XCTestCase {
             deviceState: 2,
             batteryPercent: 70
         )
-        let led = status.statusLED()
+        let led = status.statusLED(bleConnected: true)
         XCTAssertEqual(led.color, .none)
         XCTAssertEqual(led.pattern, .off)
     }
 
-    func testStatusLEDMirrorSolidOnStatTaper() {
+    func testStatusLEDMirrorOffWhenConnectedOnCharger() {
+        let status = TGMDeviceStatus(
+            onDock: true,
+            chargeActive: true,
+            worn: false,
+            deviceState: 1,
+            batteryPercent: 65
+        )
+        let led = status.statusLED(bleConnected: true)
+        XCTAssertEqual(led.color, .none)
+        XCTAssertEqual(led.pattern, .off)
+    }
+
+    func testStatusLEDMirrorFlashOnEarlyStatTaper() {
         let status = TGMDeviceStatus(
             onDock: true,
             chargeActive: false,
@@ -106,7 +125,33 @@ final class BLEConstantsTests: XCTestCase {
             batteryPercent: 65
         )
         let led = status.statusLED()
-        XCTAssertEqual(led.color, .red)
+        XCTAssertEqual(led.color, .green)
+        XCTAssertEqual(led.pattern, .flashing)
+    }
+
+    func testStatusLEDMirrorFlashWhenChargingBelowHold() {
+        let status = TGMDeviceStatus(
+            onDock: true,
+            chargeActive: true,
+            worn: false,
+            deviceState: 1,
+            batteryPercent: 72
+        )
+        let led = status.statusLED(batteryMillivolts: 4103)
+        XCTAssertEqual(led.color, .green)
+        XCTAssertEqual(led.pattern, .flashing)
+    }
+
+    func testStatusLEDMirrorHoldWhenChargingAtHoldVoltage() {
+        let status = TGMDeviceStatus(
+            onDock: true,
+            chargeActive: true,
+            worn: false,
+            deviceState: 1,
+            batteryPercent: 82
+        )
+        let led = status.statusLED(batteryMillivolts: 4210)
+        XCTAssertEqual(led.color, .green)
         XCTAssertEqual(led.pattern, .solid)
     }
 
@@ -119,8 +164,47 @@ final class BLEConstantsTests: XCTestCase {
             batteryPercent: 95
         )
         let led = status.statusLED(batteryMillivolts: 4350)
-        XCTAssertEqual(led.color, .red)
+        XCTAssertEqual(led.color, .green)
         XCTAssertEqual(led.pattern, .solid)
+    }
+
+    func testStatusLEDMirrorOffWhenOffDock() {
+        let status = TGMDeviceStatus(
+            onDock: false,
+            chargeActive: false,
+            worn: false,
+            deviceState: 0,
+            batteryPercent: 40
+        )
+        let led = status.statusLED()
+        XCTAssertEqual(led.color, .none)
+        XCTAssertEqual(led.pattern, .off)
+    }
+
+    func testStatusLEDMirrorOffWhenOffDockHighSOC() {
+        let status = TGMDeviceStatus(
+            onDock: false,
+            chargeActive: false,
+            worn: false,
+            deviceState: 0,
+            batteryPercent: 95
+        )
+        let led = status.statusLED(batteryMillivolts: 4350)
+        XCTAssertEqual(led.color, .none)
+        XCTAssertEqual(led.pattern, .off)
+    }
+
+    func testStatusLEDMirrorOffWhenPlacementIdle() {
+        let status = TGMDeviceStatus(
+            onDock: true,
+            chargeActive: true,
+            worn: false,
+            deviceState: 1,
+            batteryPercent: 65
+        )
+        let led = status.statusLED(userPlacementMode: 2)
+        XCTAssertEqual(led.color, .none)
+        XCTAssertEqual(led.pattern, .off)
     }
 
     func testNRFConnectHexSpacedFormat() {
@@ -548,6 +632,31 @@ final class BLEDataParserTests: XCTestCase {
         data2.append(contentsOf: withUnsafeBytes(of: &millivolts2) { Array($0) })
 
         XCTAssertNil(BLEDataParser.parseTGMBatteryData(data2))
+    }
+
+    func testParseBatteryUsageStreamingEstimate() {
+        // 3861 mV, gauge 34, estimate flag, 1.25 mAh, 250 min
+        let data = Data([0x15, 0x0F, 34, 0x01, 0x7D, 0x00, 0xFA, 0x00])
+        let estimate = BLEDataParser.parseBatteryUsage(data)
+        XCTAssertEqual(estimate?.voltageMillivolts, 3861)
+        XCTAssertEqual(estimate?.gaugePercent, 34)
+        XCTAssertEqual(estimate?.milliampHoursUsed ?? -1, 1.25, accuracy: 0.001)
+        XCTAssertEqual(estimate?.minutesRemaining, 250)
+        XCTAssertEqual(estimate?.isModelEstimate, true)
+        XCTAssertEqual(estimate?.onCharger, false)
+        XCTAssertEqual(estimate?.summary, "About 4 h 10 min left · 1.25 mAh used")
+    }
+
+    func testParseBatteryUsageOnCharger() {
+        let data = Data([0x15, 0x0F, 34, 0x03, 0x00, 0x00, 0xFF, 0xFF])
+        let estimate = BLEDataParser.parseBatteryUsage(data)
+        XCTAssertNil(estimate?.minutesRemaining)
+        XCTAssertEqual(estimate?.onCharger, true)
+        XCTAssertEqual(estimate?.summary, "On charger · 0.00 mAh used · estimate")
+    }
+
+    func testParseBatteryUsageRejectsShortPacket() {
+        XCTAssertNil(BLEDataParser.parseBatteryUsage(Data([0x15, 0x0F])))
     }
 
     func testParseStandardBatteryLevel() {

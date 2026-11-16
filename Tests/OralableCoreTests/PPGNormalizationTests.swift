@@ -484,8 +484,8 @@ final class PPGNormalizationTests: XCTestCase {
         // High R ratio = low SpO2
         let spo2 = await service.estimateSpO2(rRatio: 2.0)
 
-        // SpO2 = 110 - 25 * 2.0 = 60, clamped to 70
-        XCTAssertEqual(spo2, 70.0)
+        // SpO2 = 110 - 25 * 2.0 = 60 (Protocol A floor)
+        XCTAssertEqual(spo2, 60.0)
     }
 
     func testEstimateSpO2ZeroRRatio() async {
@@ -509,11 +509,11 @@ final class PPGNormalizationTests: XCTestCase {
     func testEstimateSpO2ClampingLowerBound() async {
         let service = PPGNormalizationService()
 
-        // R ratio that would produce <70%
+        // R ratio that would produce <60%
         let spo2 = await service.estimateSpO2(rRatio: 2.5)
 
-        // SpO2 = 110 - 25 * 2.5 = 47.5, clamped to 70
-        XCTAssertEqual(spo2, 70.0)
+        // SpO2 = 110 - 25 * 2.5 = 47.5, clamped to 60 (Protocol A)
+        XCTAssertEqual(spo2, 60.0)
     }
 
     // MARK: - Integration Tests

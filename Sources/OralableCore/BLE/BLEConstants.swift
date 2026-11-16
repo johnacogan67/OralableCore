@@ -17,10 +17,13 @@ public enum BLEConstants {
 
     // MARK: - TGM (Oralable) Device UUIDs
 
-    /// TGM Service and Characteristic UUIDs for Oralable oral sensor device
+    /// TGM Service and Characteristic UUIDs (legacy GATT name; user-facing device is MAM).
     public enum TGM {
 
-        /// Primary TGM service UUID
+        /// User-facing product name. GATT identifiers stay TGM.
+        public static let userFacingDeviceName = "MAM"
+
+        /// Primary TGM service UUID (legacy protocol id; product is the MAM).
         /// Contains PPG, accelerometer, temperature, and battery characteristics
         public static let serviceUUID = "3A0FF000-98C4-46B2-94AF-1AEE0FD4C48E"
 
@@ -32,9 +35,13 @@ public enum BLEConstants {
         /// Format: X(2) + Y(2) + Z(2) per sample as Int16, multiple samples per packet
         public static let accelerometerCharUUID = "3A0FF002-98C4-46B2-94AF-1AEE0FD4C48E"
 
-        /// Temperature/command characteristic (8 bytes typically)
-        /// Also used for device commands
-        public static let commandCharUUID = "3A0FF003-98C4-46B2-94AF-1AEE0FD4C48E"
+        /// Temperature notification characteristic (firmware `3A0FF003`).
+        public static let temperatureCharUUID = "3A0FF003-98C4-46B2-94AF-1AEE0FD4C48E"
+
+        /// Historical client-side name for the temperature characteristic.
+        /// Firmware command writes use `firmwareConfigCharUUID` (`3A0FF00B`).
+        @available(*, deprecated, message: "Use temperatureCharUUID; 3A0FF003 is temperature, not a command characteristic.")
+        public static let commandCharUUID = temperatureCharUUID
 
         /// TGM Battery characteristic (4 bytes - millivolts as Int32)
         /// Reports battery voltage in millivolts for accurate percentage calculation
@@ -55,11 +62,24 @@ public enum BLEConstants {
         /// Device status (read/notify): on_dock, worn, device_state, battery_pct, charge_active
         public static let statusCharUUID = "3A0FF009-98C4-46B2-94AF-1AEE0FD4C48E"
 
+        /// Best-effort UTF-8 firmware diagnostic notifications.
+        public static let firmwareLogCharUUID = "3A0FF00A-98C4-46B2-94AF-1AEE0FD4C48E"
+
+        /// Firmware configuration write characteristic.
+        public static let firmwareConfigCharUUID = "3A0FF00B-98C4-46B2-94AF-1AEE0FD4C48E"
+
+        /// Versioned firmware configuration and bench-state read/notify characteristic.
+        public static let firmwareConfigStateCharUUID = "3A0FF00C-98C4-46B2-94AF-1AEE0FD4C48E"
+
+        /// Battery usage model (read/notify, 8 bytes). Present on firmware 1.0.86+.
+        /// voltage u16, gauge u8, flags u8, mAh used x100 u16, minutes left u16.
+        public static let batteryUsageCharUUID = "3A0FF00D-98C4-46B2-94AF-1AEE0FD4C48E"
+
         /// Core streaming + status UUIDs (pcb00003 nRF Connect baseline).
         public static let nrfConnectCharacteristicUUIDs: [String] = [
             sensorDataCharUUID,
             accelerometerCharUUID,
-            commandCharUUID,
+            temperatureCharUUID,
             batteryCharUUID,
             deviceIdCharUUID,
             firmwareVersionCharUUID,
@@ -72,7 +92,7 @@ public enum BLEConstants {
         public static let allCharacteristicUUIDs: [String] = [
             sensorDataCharUUID,
             accelerometerCharUUID,
-            commandCharUUID,
+            temperatureCharUUID,
             batteryCharUUID,
             statusCharUUID
         ]
@@ -91,8 +111,11 @@ public enum BLEConstants {
             /// Battery packet size (4 bytes = Int32 millivolts)
             public static let battery = 4
 
-            /// Status packet size (4 bytes)
-            public static let status = 4
+            /// Battery usage model (3A0FF00D, firmware 1.0.86+)
+            public static let batteryUsage = 8
+
+            /// Status packet size: on_dock, worn, state, battery percent, charge active.
+            public static let status = 5
         }
 
         /// Data format constants
